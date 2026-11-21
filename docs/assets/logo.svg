@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Deep athletic obsidian background -->
+    <linearGradient id="bg-a" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0C1419"/>
+      <stop offset="55%" stop-color="#091015"/>
+      <stop offset="100%" stop-color="#111D24"/>
+    </linearGradient>
+
+    <!-- Subtle radial volt aura behind the mark -->
+    <radialGradient id="aura-a" cx="512" cy="500" r="400" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#C8FF2E" stop-opacity="0.20"/>
+      <stop offset="50%" stop-color="#22E58B" stop-opacity="0.07"/>
+      <stop offset="100%" stop-color="#091015" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Main Volt-to-Mint energetic gradient -->
+    <linearGradient id="pulse-grad" x1="200" y1="300" x2="824" y2="720" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#DCFF38"/>
+      <stop offset="48%" stop-color="#8EFF52"/>
+      <stop offset="100%" stop-color="#1FE08B"/>
+    </linearGradient>
+
+    <!-- Soft ambient glow filter -->
+    <filter id="glow-a" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="20" result="blur"/>
+      <feColorMatrix in="blur" type="matrix"
+        values="0 0 0 0 0.62
+                0 0 0 0 1.00
+                0 0 0 0 0.28
+                0 0 0 0.30 0" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background Layer (exportable separately for Apple Icon Composer) -->
+  <g id="background">
+    <rect width="1024" height="1024" fill="url(#bg-a)"/>
+    <rect width="1024" height="1024" fill="url(#aura-a)"/>
+    <!-- Subtle watch-dial concentric rings -->
+    <circle cx="512" cy="512" r="392" fill="none" stroke="#C8FF2E" stroke-opacity="0.07" stroke-width="2"/>
+    <circle cx="512" cy="512" r="306" fill="none" stroke="#FFFFFF" stroke-opacity="0.035" stroke-width="2"/>
+  </g>
+
+  <!-- Foreground Layer: Symmetric athletic Pulse-W (with subtle -4 deg forward stride lean) -->
+  <g id="foreground" transform="translate(512 512) skewX(-4) translate(-512 -512)">
+    <!-- Subtle phase-shifted voice echo trace -->
+    <path d="M 244 434 L 378 700 L 512 356 L 646 700 L 780 434"
+          fill="none"
+          stroke="#22E58B"
+          stroke-opacity="0.22"
+          stroke-width="24"
+          stroke-linecap="round"
+          stroke-linejoin="round"/>
+
+    <!-- Primary bold Volt-to-Mint Pulse-W -->
+    <path d="M 244 402 L 378 698 L 512 318 L 646 698 L 780 402"
+          fill="none"
+          stroke="url(#pulse-grad)"
+          stroke-width="84"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          filter="url(#glow-a)"/>
+
+    <!-- Flanking voice-pulse ticks inside watch safe circle -->
+    <line x1="176" y1="482" x2="176" y2="548" stroke="#D2FF3A" stroke-opacity="0.72" stroke-width="32" stroke-linecap="round"/>
+    <line x1="848" y1="482" x2="848" y2="548" stroke="#1FE08B" stroke-opacity="0.72" stroke-width="32" stroke-linecap="round"/>
+  </g>
+</svg>
