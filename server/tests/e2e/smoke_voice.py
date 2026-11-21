@@ -6,6 +6,10 @@ numbers from the frames and that the agent called `get_metrics`.
 
 Usage (from server/):
   uv run python tests/e2e/smoke_voice.py --invite <code> [--api http://127.0.0.1:8000]
+Against a deployed host, read the agent log over SSH:
+  uv run python tests/e2e/smoke_voice.py --invite <code> --api https://coach.example.com \
+    --agent-log-cmd "ssh root@<host> docker compose -f /opt/coach-w/deploy/docker-compose.yml \
+      logs --no-color --no-log-prefix agent"
 Writes ../artifacts/smoke_voice.json. Exit code 0 when every check passes.
 Not collected by pytest. All metrics here are synthetic.
 """
@@ -88,12 +92,42 @@ def frame_json(seq: int, elapsed: float) -> bytes:
     ).encode()
 
 
-def tool_calls_since(offset: int) -> list[str]:
-    text = AGENT_LOG.read_text(errors="replace")[offset:] if AGENT_LOG.exists() else ""
+def agent_log(cmd: str | None) -> str:
+    """Agent log text: the local dev.sh log, or the output of `cmd` (e.g. ssh + docker logs)."""
+    if cmd:
+        out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+        return out.stdout
+    return AGENT_LOG.read_text(errors="replace") if AGENT_LOG.exists() else ""
+
+
+async def media_paths(room: rtc.Room) -> list[str]:
+    """Nominated ICE pairs as `pc protocol LOCAL->REMOTE:port`, e.g. UDP vs the TCP fallback."""
+    stats = await room.get_rtc_stats()
+    paths = []
+    for pc, items in (("pub", stats.publisher_stats), ("sub", stats.subscriber_stats)):
+        cands = {}
+        for s in items:
+            kind = s.WhichOneof("stats")
+            if kind in ("local_candidate", "remote_candidate"):
+                c = getattr(s, kind)
+                cands[c.rtc.id] = c.candidate
+        for s in items:
+            if s.WhichOneof("stats") != "candidate_pair":
+                continue
+            p = s.candidate_pair.candidate_pair
+            loc, rem = cands.get(p.local_candidate_id), cands.get(p.remote_candidate_id)
+            if p.nominated and loc and rem:
+                types = type(loc).DESCRIPTOR.fields_by_name["candidate_type"].enum_type
+                lt, rt = (types.values_by_number[c.candidate_type].name for c in (loc, rem))
+                paths.append(f"{pc} {loc.protocol} {lt}->{rt}:{rem.port}")
+    return paths
+
+
+def tool_calls(text: str) -> list[str]:
     return re.findall(r"tool get_metrics called available=(\w+)", text)
 
 
-async def main(api_url: str, invite: str) -> int:
+async def main(api_url: str, invite: str, log_cmd: str | None) -> int:
     athlete = str(uuid.uuid4())
     req = urllib.request.Request(
         f"{api_url}/v1/session",
@@ -166,7 +200,7 @@ async def main(api_url: str, invite: str) -> int:
             await asyncio.sleep(0.1)
 
     async def ask(question: str) -> dict:
-        offset = AGENT_LOG.stat().st_size if AGENT_LOG.exists() else 0
+        offset = len(agent_log(log_cmd))
         pcm = say(question)
         t = time.monotonic()
         await speak(source, pcm)
@@ -176,7 +210,8 @@ async def main(api_url: str, invite: str) -> int:
         await until_quiet(40)
         await asyncio.sleep(2)
         answer = " ".join(text for ts, text in said if ts >= t)
-        return {"question": question, "answer": answer, "tool_calls": tool_calls_since(offset)}
+        calls = tool_calls(agent_log(log_cmd)[offset:])
+        return {"question": question, "answer": answer, "tool_calls": calls}
 
     checks: dict[str, bool] = {}
     start = time.monotonic()
@@ -197,12 +232,15 @@ async def main(api_url: str, invite: str) -> int:
     # power is absent from the frames: the coach should say it has no data (recorded, not asserted)
     power = await ask("我现在功率多少瓦？")
 
+    paths = await media_paths(room)
     metrics_task.cancel()
     await room.disconnect()
 
     result = {
         "date": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "server_url": session["server_url"],
         "room": session["room"],
+        "media_paths": paths,
         "checks": checks,
         "turns": [hr, pace, power],
         "transcripts": debug,
@@ -217,5 +255,9 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--api", default="http://127.0.0.1:8000")
     p.add_argument("--invite", required=True)
+    p.add_argument(
+        "--agent-log-cmd",
+        help="command printing the agent log of a remote stack (default: logs/agent.log)",
+    )
     args = p.parse_args()
-    sys.exit(asyncio.run(main(args.api, args.invite)))
+    sys.exit(asyncio.run(main(args.api, args.invite, args.agent_log_cmd)))

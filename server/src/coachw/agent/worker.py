@@ -27,6 +27,8 @@ server = AgentServer(
     num_idle_processes=int(os.environ.get("COACHW_AGENT_IDLE_PROCESSES", "2")),
     # the default 10 s is not always enough to import the plugin stack on a busy host
     initialize_process_timeout=30.0,
+    # health endpoint (8081 in production) is for the host only; the default binds every interface
+    host="127.0.0.1",
 )
 
 
