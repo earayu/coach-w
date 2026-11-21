@@ -24,3 +24,6 @@ xcuserdata/
 # local runs
 logs/
 artifacts/
+
+# local tools (scripts/install-livekit.sh)
+.tools/

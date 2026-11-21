@@ -1,0 +1,52 @@
+# coach-w server on one Linux host (docs/spec.md section 10, deploy/README.md).
+# Host networking, as in LiveKit's own VM setup: WebRTC needs the host's UDP ports directly.
+# Only Caddy (80/443), LiveKit RTC (7881/TCP, 50000-60000/UDP) are reachable from outside;
+# LiveKit signalling (7880) and the API (8000) listen on 127.0.0.1 behind Caddy.
+
+x-server: &server
+  build: ../server
+  image: coachw-server:local
+  restart: unless-stopped
+  network_mode: host
+  env_file: .env
+  environment:
+    LIVEKIT_URL: ws://127.0.0.1:7880
+    LIVEKIT_PUBLIC_URL: wss://${COACHW_DOMAIN:?set COACHW_DOMAIN in deploy/.env}
+
+services:
+  caddy:
+    image: caddy:2.11.9
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      COACHW_DOMAIN: ${COACHW_DOMAIN:?set COACHW_DOMAIN in deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    restart: unless-stopped
+    network_mode: host
+    command: --config /etc/livekit.yaml
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?}: ${LIVEKIT_API_SECRET:?}"
+      LIVEKIT_WEBHOOK_API_KEY: ${LIVEKIT_API_KEY:?}
+      NODE_IP: ${NODE_IP:?set NODE_IP (the host's public IPv4) in deploy/.env}
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+
+  api:
+    <<: *server
+    command: ["python", "-m", "coachw.api"]
+    depends_on: [livekit]
+
+  agent:
+    <<: *server
+    command: ["python", "-m", "coachw.agent", "start"]
+    depends_on: [livekit]
+
+volumes:
+  caddy_data:
+  caddy_config:

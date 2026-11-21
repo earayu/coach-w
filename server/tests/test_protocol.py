@@ -51,6 +51,12 @@ def test_rejects_bad_frames(patch: dict):
         MetricsFrame.from_dict(load("metrics_frame_v1_minimal.json") | patch)
 
 
+@pytest.mark.parametrize("raw", ["[]", "1", "null", '"frame"'])
+def test_rejects_non_objects(raw: str):
+    with pytest.raises(ProtocolError):
+        MetricsFrame.from_json(raw)
+
+
 def test_rejects_missing_required():
     data = load("metrics_frame_v1_minimal.json")
     del data["elapsed_s"]

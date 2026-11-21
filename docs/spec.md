@@ -4,7 +4,7 @@
 |---|---|
 | 版本 | v0.1 |
 | 日期 | 2026-11-21 |
-| 状态 | 草案。M1 进行中（第 13 节）。 |
+| 状态 | 草案。M1 待真机验收；M2 服务端已在本机跑通，iOS 接入未开始（第 13 节）。 |
 
 这是 coach-w 最核心的文档。产品范围、领域模型、架构、技术选型都以本文为准；改动这些内容时先改本文，再改代码。
 
@@ -87,6 +87,15 @@ erDiagram
 - 服务端教练状态只在会话内存里，按 `athlete_id` 区分；日志只记 `athlete_id`，不记名字。
 - 每日语音分钟上限从第一天就有：实时语音模型按时长计费，朋友用也要防止意外超支。
 
+**M2 的实现（`server/src/coachw/api/`）：**
+
+- 邀请码在环境变量 `COACHW_INVITES`：逗号分隔的 `code:name:daily_minutes`，码至少 12 个字符。比较用常量时间。名字只给运维看，不进日志、不进 token、不发给 Agent。
+- `POST /v1/session`，请求体 `{invite_code, athlete_id}`（`athlete_id` 必须是 UUID）。成功返回 `{server_url, room, token, token_expires_at, max_session_s}`；未知邀请码 401，`athlete_id` 不合法 422，当日分钟不足 429（见下）。
+- token：每次新建一个房间 `coach-<随机>`，只能加入这个房间；identity 是 `athlete_id`；有效期 `COACHW_TOKEN_TTL_S`（默认 10 分钟，只管"多久内能加入"）；房间配置里 dispatch 教练 Agent（`coach-w`），最多 2 个参与者。participant metadata 里签入 `{athlete_id, max_session_s}`，客户端改不了。
+- 分钟上限按邀请码（即按人）计，"一天"按 `COACHW_QUOTA_TZ`（默认 Asia/Shanghai）。签发 token 时预占本次会话上限 `min(当日剩余, COACHW_SESSION_MAX_MINUTES)`，剩余不足 `COACHW_MIN_SESSION_S`（默认 60 秒）时返回 429。LiveKit webhook（`participant_joined` / `participant_left`，只在本机回环地址可达）把预占结算成实际在房间里的时长；token 过期仍未加入的预占自动释放。并发拿多个 token 也不会超额。
+- 会话时长上限由 Agent 执行：到 `max_session_s` 时说一句告别，然后删除房间。
+- **计数只在 API 进程内存里，进程重启当日用量清零。** 几个人用时可以接受；开放注册时随账号表一起换成数据库。
+
 **必须守住的接缝：**
 
 - 服务端所有接口和会话都带 `athlete_id`，不出现"只有一个用户"的假设（全局单例状态、写死的个人参数）。
@@ -161,7 +170,9 @@ MetricsFrame ─▶ MetricsState（多窗口趋势）
 
 运动中只开放少量工具，降低延迟（pace-pilot 的经验）。通用工具：`get_metrics`、`get_progress`、`set_quiet(minutes)`、`end_workout_summary`。档案可增加自己的工具，例如跑步的 `adjust_target_pace`。
 
-Qwen Realtime 的 function calling：`livekit-plugins-aliyun` 1.8.10 的源码里有工具转换、`update_tools` 和 `response.function_call_arguments.done` 处理，但端到端未实测（14.2）。不可用时退回"每次 cue 的指令里带上最新指标"。
+Qwen Realtime 的 function calling 经 `livekit-plugins-aliyun` 1.8.10 端到端可用（14.1），但插件有一个缺陷要绕开：Qwen 常在用户这句话的转写到达之前就调用工具，插件在工具返回后同步上下文时，把这条还没有文字的语音消息当成空消息**从服务端会话里删掉**，模型随后回答的是更早的一条文字消息（实测表现为重复开场白或答非所问）。`coachw.providers.qwen` 在同步时保留这类待转写的用户消息，修复后连续 3 轮冒烟全部答对。升级插件时先跑冒烟（7.2），确认问题是否已在上游修复。
+
+工具结果以 JSON 字符串返回（框架会把非字符串结果 `str()` 成 Python 表示）。不可用时的退路仍是"每次 cue 的指令里带上最新指标"。
 
 ## 5. 运动档案（Activity Profile）
 
@@ -264,14 +275,23 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 - 转向检测默认 `server_vad`。voicelab 实测：`smart_turn` 下打断要约 5 秒才生效，`server_vad` 约 0.5 秒。
 - iOS 不直连 Qwen，不持有模型 Key；token 由服务端签发，限定房间和 Agent。
 
-### 7.2 音频与耳机
+### 7.2 服务端实现（M2）
+
+- 教练 Agent：`server/src/coachw/agent/`。`worker.py` 是 `AgentServer` 入口（`python -m coachw.agent dev|start`），每个房间一个会话；`coach.py` 是系统提示词和工具；`metrics.py` 保存本会话最新一帧。
+- Agent 只接受房间里那位运动者（token 的 identity）在 `coach.metrics` 上发的帧，用 `MetricsFrame` 解析；坏帧丢弃并只记错误类型。按 `(ts, seq)` 只保留更新的帧，迟到的帧不覆盖。
+- `get_metrics` 返回最新一帧里有的指标、`age_s` 和换算好的 `pace_per_km`；超过 10 秒没有新帧时返回 `available: false`。坐标不给模型。缺省的指标不出现，不报 0。
+- 实时模型由 `coachw.providers.get_realtime_model(name)` 创建，`COACHW_PROVIDER` 默认 `qwen`；插件只在 `providers/` 里引用。
+- 同一主机预热的空闲进程数 `COACHW_AGENT_IDLE_PROCESSES`（默认 2；LiveKit 生产默认 8，2 核 4G 吃不消）；进程初始化超时放宽到 30 秒（负载高时默认 10 秒不够，实测会导致派单失败）。
+- 本机一条命令起全套：`./scripts/dev.sh`（LiveKit 二进制 + token API + Agent，日志在 `logs/`）。端到端冒烟：`server/tests/e2e/smoke_voice.py`，用 macOS `say` 提问，用合成指标帧，检查回答里的数字来自工具。
+
+### 7.3 音频与耳机
 
 - `AVAudioSession` 用 `playAndRecord` + 允许蓝牙（HFP）以使用耳机麦克风。HFP 下音质降为窄带单声道，对语音足够，音乐会变差。备选：手机麦克风 + A2DP 输出（风噪大）。待户外实测（14.2）。
 - 教练说话时压低音乐（`duckOthers`），说完恢复。
 - iOS 开启 `audio` 后台模式；锁屏下持续运行依赖后台音频 + 镜像 workout 会话。
 - 风噪与喘息可能误触发 VAD。兜底：按键说话（耳机多功能键 `MPRemoteCommandCenter`，或手表按钮）。
 
-### 7.3 断网兜底
+### 7.4 断网兜底
 
 - 网络断开时语音会话中断，运动记录不受影响（在手表上）。
 - iPhone 本地用 `AVSpeechSynthesizer` 播报紧急类和节点类 cue 的模板文本（由本地规则产生），手表震动照常。
@@ -338,14 +358,16 @@ apple/
 server/
   src/coachw/
     protocol.py      线协议 v1
-    agent/           LiveKit Agent 入口（M2）
-    api/             token 签发（M2）
+    session.py       token API 与 Agent 之间的约定：Agent 名、SessionMeta、athlete_id 校验
+    agent/           LiveKit Agent：worker（入口、会话上限）、coach（提示词、工具）、metrics（最新帧）
+    api/             token API：app（FastAPI）、invites、quota（分钟账本）、tokens、config
     coach/           MetricsState、Director、EventEngine、CueQueue（M3）
     profiles/        运动档案（M3）
-    providers/       实时模型适配（M2，从 voicelab 迁移）
-  tests/
+    providers/       实时模型注册表；qwen.py（从 voicelab 迁移，含插件缺陷绕行，4.7）
+  tests/             单元测试；tests/e2e/smoke_voice.py 是需要真 Key 的端到端冒烟，不被 pytest 收集
+  Dockerfile         api 和 agent 共用的镜像
 protocol/fixtures/   线协议规范样例，两端测试共用
-deploy/              docker compose、Caddy、LiveKit 配置（M2）
+deploy/              docker compose、Caddyfile、LiveKit 配置（生产 / 本机）、.env.example
 spikes/              技术验证脚本，不属于产品代码
 docs/                文档
 ```
@@ -356,14 +378,32 @@ docs/                文档
 
 ## 10. 部署
 
-- 一台云主机（2 核 4G 起），公网 IP，一个域名。
+- 一台 Linux 云主机（2 核 4G 起），公网 IPv4，一个域名。
 - 地域：中国内地服务器用域名对外提供 80/443 服务需 ICP 备案；未备案时选香港。DashScope 走北京节点。
-- 端口：443/TCP（Caddy + LiveKit 信令），7881/TCP（WebRTC over TCP），50000–60000/UDP（媒体），3478/UDP（TURN）。以 LiveKit 官方部署文档为准，部署时核对。
-- 密钥（LiveKit API secret、DashScope key）只放服务器环境变量，不入库。
+- 形态：`deploy/docker-compose.yml`，四个服务 Caddy、LiveKit Server（v1.13.11，与本机验证用的二进制同版本）、api、agent，全部 host 网络（与 LiveKit 官方 VM 方案一致：WebRTC 要直接用主机的 UDP 端口）。api 和 agent 共用 `server/Dockerfile` 构建的镜像。操作步骤见 `deploy/README.md`。
+- Caddy 给一个域名签 TLS：`/v1/*` 转 token API，其余转 LiveKit 信令（WebSocket）。webhook 路径不对外。
+- 端口，按 LiveKit 官方文档（[Ports and firewall](https://docs.livekit.io/transport/self-hosting/ports-firewall/)、[Virtual machines](https://docs.livekit.io/transport/self-hosting/vm/)，2026-11-21 核对）：
+
+| 端口 | 用途 | 对外 |
+|---|---|---|
+| 80/TCP | Let's Encrypt 签发、跳转 HTTPS | 是 |
+| 443/TCP | Caddy：token API + LiveKit 信令 | 是 |
+| 7881/TCP | WebRTC over TCP（UDP 不通时） | 是 |
+| 50000–60000/UDP | WebRTC 媒体（每个参与者用两个端口） | 是 |
+| 7880/TCP | LiveKit API / 信令，只绑 127.0.0.1，经 Caddy 访问 | 否 |
+| 8000/TCP | token API，只绑 127.0.0.1 | 否 |
+| 3478/UDP、5349/TCP | 内置 TURN（UDP / TLS） | 暂不启用 |
+
+- TURN 暂不启用：服务器有公网 IP，UDP 不通时还有 7881/TCP。官方方案里 TURN/TLS 要占 443，需要第二个域名和 Caddy 的 layer4 模块；移动网络实测（14.2）有需要再加。
+- 对外通告的 IP 用 `NODE_IP` 显式配置，不用 `rtc.use_external_ip`：后者靠 Google STUN 发现公网 IP，本机（中国内地网络）实测超时，LiveKit 直接启动失败。
+- 本机开发不需要 Docker：`./scripts/dev.sh` 用 LiveKit 二进制（`scripts/install-livekit.sh` 从源码编译到 `.tools/`，或已在 PATH 上的 `livekit-server`）和 `deploy/livekit.dev.yaml`。
+- 密钥（LiveKit API secret、DashScope key）和邀请码只放服务器的 `deploy/.env`，不入库。
 
 ## 11. 隐私与密钥
 
 - 心率、位置是健康和隐私数据。服务端只在会话内存里使用，第一版不持久化；日志里不打指标原值和坐标。
+- 指标会随工具结果发给模型厂商（DashScope），这是实时教练的前提。坐标不发：`get_metrics` 不返回 `lat` / `lon`。
+- 日志只记 `athlete_id` 和房间名，不记名字、邀请码、指标值；坏帧只记错误类型。LiveKit Agents 在 DEBUG 级别会打印对话文本（可能含说出口的心率），所以 Agent 在本机和生产都用 INFO 级别。
 - 客户端不持有模型 Key。LiveKit token 短期有效、限定房间。
 - 仓库公开：不提交任何凭据、`.env`、个人数据、真实运动记录。测试样例使用合成数据。
 
@@ -408,6 +448,19 @@ docs/                文档
 | 真机安装 | 完成（2026-11-21）：iPhone 16 Pro（iOS 27.2.1）和 Apple Watch Series 8（watchOS 26.6.1）都已装上，手表 App 能启动 |
 | 真机验收：1 公里，iPhone 锁屏也持续收到 ≥1 Hz 心率和配速 | 待维护者实测 |
 
+### 13.3 M2 进度
+
+| 项 | 状态 |
+|---|---|
+| 教练 Agent：Qwen 适配和 provider 注册表（从 voicelab 迁移）、AgentServer / AgentSession、订阅 `coach.metrics`、每会话最新帧、`get_metrics`、禁止估计数字的提示词、会话时长上限 | 完成。本机端到端冒烟通过（14.1） |
+| Qwen 插件工具调用缺陷的绕行（4.7） | 完成，有单元测试 |
+| token API：邀请码、短期 token（限定房间、dispatch Agent）、每日分钟上限（内存、预占 + webhook 结算）、日志只记 `athlete_id` | 完成。本机实测：合法码 200、非法码 401、超额 429、webhook 结算、到上限被踢出 |
+| 本地一条命令起全套：`./scripts/dev.sh` | 完成 |
+| 部署：docker compose（Caddy、LiveKit、api、agent）、`.env.example`、`deploy/README.md`、端口核对 | 文件完成；Caddyfile 和 LiveKit 生产配置本机验证；镜像构建和 compose 校验在 CI。**未在真实服务器上部署**（服务器未购买） |
+| 单元测试：协议解析、邀请码、分钟账本、token 内容、API、Agent 指标与工具、provider | 完成（67 个） |
+| iOS 接入 LiveKit（语音模块、发 `coach.metrics`、拿 token） | 未开始，下一个 issue |
+| 户外耳机对话（M2 完成标志） | 待 iOS 接入 |
+
 ## 14. 验证记录
 
 ### 14.1 已实测
@@ -417,14 +470,23 @@ docs/                文档
 | 镜像数据通路首次真机运行（iPhone 16 Pro iOS 27.2.1 + Watch Series 8 watchOS 26.6.1） | 通过，样本很短（2026-11-21，室内静止，未锁屏）。iPhone 收到 5 帧，丢失 0、乱序 0，平均间隔 1.82 秒，手机与手表时间差 74 ms。静止状态下配速、步频、功率、跑姿都是空值，能量为 0。锁屏和户外 1 公里尚未测试 |
 | 手表配对开发（watchOS 26.6.1 + iOS 27.2.1 + Xcode 27.2） | 通过（2026-11-21）。watchOS 26 不走 Device Hub 的 "Pair Nearby Device"（那是 watchOS 27 的流程），而是经由数据线连着的 iPhone 被 Mac 发现，需要在手表上点"信任"。信任后设置里仍没有开发者模式开关，直到 Mac 向手表安装一次开发签名 App（因开发者模式未开启而失败）后开关才出现。开启后首次安装报描述文件不含该设备，需用 `-allowProvisioningDeviceRegistration` 以手表为目标构建一次，注册手表 UDID |
 | LiveKit + Qwen Realtime（voicelab，浏览器端） | 通过（2026-11-09）。`server_vad` 打断约 0.5 秒；`smart_turn` 约 5 秒 |
+| M2 服务端本机端到端冒烟（`server/tests/e2e/smoke_voice.py`） | 通过（2026-11-21，macOS / Darwin 25.6，LiveKit 1.13.11 二进制，`livekit-agents` / `livekit-plugins-aliyun` 1.8.10，`qwen-audio-3.1-realtime-flash`，`server_vad`）。Python 客户端经 token API 拿 token 进房间，每秒发一帧合成指标（心率 137、配速 5'32"，无功率），用 macOS `say` 提问。连续 3 轮全部通过：问心率答"一百三十七"，问配速答"每公里五分三十二秒"，每次都先调用了 `get_metrics`；问功率答"现在拿不到功率数据" |
+| Qwen function calling 经 `livekit-plugins-aliyun` 1.8.10 | 可用，但需绕开插件缺陷（4.7）。修复前跑了 5 轮，心率和配速共 10 次提问只答对 2 次：工具都调用了，回答多数是重复开场白或上一句话；抓 Qwen 事件确认插件在工具返回后删掉了刚说完、尚未转写的用户语音消息 |
+| `generate_reply(instructions=...)` 在 Qwen 插件下的语义（读源码 + 事件日志） | 会话里还没有用户消息时，指令作为一条合成的**用户**文字消息插入（Qwen 要求先有用户消息才能 `response.create`）；之后作为 system 消息插入。它们留在对话历史里 |
+| token API 与分钟上限（本机，经 `dev.sh`） | 通过（2026-11-21）。合法码 200、非法码 401、预占用完 429；加入 10 秒后离开，webhook 把预占结算为约 11 秒，下一次签发的上限据此计算；会话上限 60 秒时 Agent 在 60 秒说告别并删房间，客户端 67 秒被断开 |
+| Caddyfile 路由（本机 Caddy 2.11.9，域名 localhost） | 通过（2026-11-21）。`/v1/session` 到 API（200 / 401），其余到 LiveKit（`/` 返回 OK，`/rtc` 无效 token 返回 401），`/livekit/webhook` 不对外（404） |
+| LiveKit 生产配置（`deploy/livekit.yaml`，v1.13.11） | `use_external_ip: true` 在本机（中国内地网络）启动失败：STUN 解析公网 IP 超时。改为 `NODE_IP` 显式配置后正常启动，`bind_addresses: 127.0.0.1` 只限制 7880，7881/TCP 仍监听所有地址 |
 
 ### 14.2 仍待验证
 
 - Apple Watch Series 8 在 workout 中实际上报哪些跑步指标（功率、步幅、触地时间、垂直振幅）。
 - 镜像 workout 会话下，iPhone 锁屏后 App 是否持续运行并接收数据。
 - 指标帧实际频率（心率、配速的更新间隔）。
-- Qwen Realtime 经 `livekit-plugins-aliyun` 的 function calling 端到端是否可用。
-- `generate_reply(instructions=...)` 在 Qwen 插件下打断与排队行为。
+- `generate_reply(instructions=...)` 在 Qwen 插件下的打断与排队行为（M3 的 cue 依赖它）。
+- 工具调用带来的额外回答延迟（冒烟只验证了正确性，没测延迟）。
+- 在真实服务器上 `docker compose up`：证书签发、公网 WebRTC（UDP 和 7881/TCP 回退）、webhook、容器内 Agent 进程预热与内存占用。本机没有 Docker，镜像只在 CI 构建过。
+- 移动网络下是否需要 TURN/TLS（第 10 节）。
+- token API 进程重启后当日用量清零的实际影响（只在几个人用时可以接受）。
 - 韶音耳机 HFP 模式下的户外收音质量、风噪对 `server_vad` 的影响。
 - LiveKit Swift SDK 与后台音频、蓝牙路由切换的兼容性。
 - 4G/5G 移动网络下的端到端延迟。

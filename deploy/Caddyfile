@@ -1,0 +1,11 @@
+# TLS for the one public domain. Certificates come from Let's Encrypt automatically (needs 80 + 443).
+{$COACHW_DOMAIN} {
+	# token API; /livekit/webhook and /healthz stay internal
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:8000
+	}
+	# LiveKit signalling (WebSocket) and server API
+	handle {
+		reverse_proxy 127.0.0.1:7880
+	}
+}

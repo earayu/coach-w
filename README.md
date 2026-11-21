@@ -8,7 +8,7 @@ Wear an Apple Watch, carry an iPhone, put on your headphones (bone-conduction fi
 
 Running comes first, then cycling and walking (where it is more of a walking buddy than a coach). Every other Apple Watch workout type is covered by a generic profile.
 
-> Status: M1. The watch-to-iPhone data path is built but not yet verified on devices; no coach yet. See [`docs/spec.md`](docs/spec.md).
+> Status: M1 data path built, awaiting on-device verification. M2 server side (coach agent, invite-only token API, deployment files) runs end to end on a local machine; not yet deployed, and the iPhone app does not talk to it yet. See [`docs/spec.md`](docs/spec.md).
 
 ## How it works
 
@@ -34,7 +34,7 @@ apple/CoachKit/     Swift package: wire protocol and platform-free logic
 apple/iOS, Watch/   iPhone and watchOS apps (M1)
 server/             Python: coach agent, token API, profiles
 protocol/fixtures/  canonical wire-protocol samples shared by both sides
-deploy/             docker compose for LiveKit + agent (M2)
+deploy/             docker compose: Caddy, LiveKit, token API, coach agent
 docs/               spec and setup checklist
 ```
 
@@ -43,10 +43,12 @@ docs/               spec and setup checklist
 Requires macOS with Xcode (Swift 6) and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-./scripts/check.sh
+./scripts/check.sh      # every check, run before committing
+cp .env.example .env    # add DASHSCOPE_API_KEY
+./scripts/dev.sh        # LiveKit + token API + coach agent locally, no Docker needed
 ```
 
-See [`docs/setup.md`](docs/setup.md) for accounts, devices and servers to prepare, and [`AGENTS.md`](AGENTS.md) for contribution rules.
+Deploying to a server: [`deploy/README.md`](deploy/README.md). See [`docs/setup.md`](docs/setup.md) for accounts, devices and servers to prepare, and [`AGENTS.md`](AGENTS.md) for contribution rules.
 
 ## License
 

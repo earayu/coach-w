@@ -1,0 +1,24 @@
+# Production LiveKit config. Keys come from LIVEKIT_KEYS and the webhook key from
+# LIVEKIT_WEBHOOK_API_KEY (both set by docker-compose.yml from deploy/.env).
+# Ports follow https://docs.livekit.io/transport/self-hosting/ports-firewall/ (checked 2026-11-21).
+port: 7880
+bind_addresses:
+  # signalling only via Caddy; this does not restrict the RTC ports below
+  - "127.0.0.1"
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 60000
+  # The advertised IP comes from NODE_IP (deploy/.env). STUN discovery (use_external_ip) uses
+  # Google STUN, which timed out from mainland China in testing and stops the server starting.
+  use_external_ip: false
+webhook:
+  urls:
+    - http://127.0.0.1:8000/livekit/webhook
+room:
+  empty_timeout: 60
+turn:
+  # TURN/TLS on 443 needs a second domain and a layer-4 proxy; added only if mobile tests need it
+  enabled: false
+logging:
+  level: info

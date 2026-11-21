@@ -48,6 +48,8 @@ class MetricsFrame:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MetricsFrame:
+        if not isinstance(data, dict):
+            raise ProtocolError("metrics frame must be a JSON object")
         if data.get("v") != PROTOCOL_VERSION:
             raise ProtocolError(f"unsupported protocol version {data.get('v')!r}")
         missing = [k for k in ("seq", "ts", "activity", "state", "elapsed_s") if k not in data]

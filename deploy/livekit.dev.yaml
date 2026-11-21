@@ -1,0 +1,16 @@
+# Local development only (scripts/dev.sh). API keys come from LIVEKIT_KEYS, set from .env.
+port: 7880
+bind_addresses:
+  - "127.0.0.1"
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: false
+webhook:
+  # api_key comes from LIVEKIT_WEBHOOK_API_KEY
+  urls:
+    - http://127.0.0.1:8000/livekit/webhook
+room:
+  empty_timeout: 60
+logging:
+  level: info

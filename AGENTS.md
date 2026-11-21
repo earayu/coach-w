@@ -12,7 +12,7 @@ coach-w 是一个实时语音运动教练：Apple Watch 采集运动指标，iPh
 
 ## 当前状态
 
-M1 进行中，进度见 `docs/spec.md` 13.1–13.2。已有：文档、线协议 v1（`protocol/fixtures/`、`apple/CoachKit`、`server/src/coachw/protocol.py`）、CI；iOS + watchOS App 的数据通路（手表采集 → 镜像会话 → iPhone 显示），代码完成、尚未真机验收。服务端 Agent 尚未开始。
+进度见 `docs/spec.md` 13.1–13.3。已有：文档、线协议 v1（`protocol/fixtures/`、`apple/CoachKit`、`server/src/coachw/protocol.py`）、CI；iOS + watchOS App 的数据通路（手表采集 → 镜像会话 → iPhone 显示），代码完成、尚未真机验收。M2 服务端（教练 Agent、token API、部署文件）在本机跑通，未部署到真实服务器；iOS 尚未接入 LiveKit。
 
 代码地图：
 
@@ -21,6 +21,11 @@ M1 进行中，进度见 `docs/spec.md` 13.1–13.2。已有：文档、线协�
 - `apple/iOS/MirrorReceiver.swift`：iPhone 接镜像会话、解帧、统计
 - `apple/Shared/WorkoutActivity.swift`：UI 可选运动与 HealthKit / 线协议的映射表、HealthKit 权限类型
 - `apple/CoachKit`：`MetricsFrame`（线协议）、`FrameBuilder`（合并读数、节流、推算步频）、`FrameStats`（收端统计）
+- `server/src/coachw/session.py`：token API 与 Agent 的约定（Agent 名 `coach-w`、签进 token 的 `SessionMeta`）
+- `server/src/coachw/agent/worker.py`：Agent 入口、订阅 `coach.metrics`、会话时长上限；`coach.py`：系统提示词和 `get_metrics`；`metrics.py`：每会话最新帧和工具结果
+- `server/src/coachw/providers/`：实时模型注册表；`qwen.py` 含 `livekit-plugins-aliyun` 工具调用缺陷的绕行（spec 4.7），升级插件前先跑冒烟
+- `server/src/coachw/api/`：`app.py`（`POST /v1/session`、LiveKit webhook）、`invites.py`、`quota.py`（每日分钟账本）、`tokens.py`、`config.py`（环境变量）
+- `deploy/`：docker compose、Caddyfile、`livekit.yaml`（生产）/ `livekit.dev.yaml`（本机）、`.env.example`；`server/Dockerfile`
 
 ## 不可违背的产品约束
 
@@ -37,9 +42,9 @@ M1 进行中，进度见 `docs/spec.md` 13.1–13.2。已有：文档、线协�
 
 - iOS / watchOS：Swift 6、SwiftUI、HealthKit、LiveKit Swift SDK（M2）；工程由 XcodeGen 的 `apple/project.yml` 生成（M1），`.xcodeproj` 不入库
 - 共享 Swift 逻辑：SwiftPM 包 `apple/CoachKit`
-- 服务端：Python 3.12、uv、LiveKit Agents、`livekit-plugins-aliyun`（M2 起，版本锁定）
+- 服务端：Python 3.12、uv、`livekit-agents` / `livekit-plugins-aliyun` 1.8.10（锁定，传递依赖按 voicelab 验证过的版本约束在 `server/pyproject.toml`）、token API 用 FastAPI
 - 检查：Python 用 ruff + pytest；Swift 用 `swift test`
-- 部署：docker compose + Caddy + LiveKit Server（M2）
+- 部署：docker compose + Caddy + LiveKit Server v1.13.11
 
 ## 目录约定
 
@@ -50,7 +55,7 @@ apple/Watch/         watchOS App（M1）
 server/src/coachw/   服务端包：protocol、agent、api、coach、profiles、providers
 server/tests/        服务端测试
 protocol/fixtures/   线协议规范样例，两端测试共用
-deploy/              部署配置（M2）
+deploy/              部署配置：docker compose、Caddy、LiveKit
 spikes/              技术验证脚本，不属于产品代码
 docs/                文档
 ```
@@ -94,6 +99,15 @@ uv sync                                  # 安装依赖（含 dev）
 uv run ruff check . && uv run ruff format --check .
 uv run pytest
 
+# 本机起全套服务端（LiveKit 二进制 + token API + 教练 Agent，不需要 Docker）
+cp .env.example .env                     # 填 DASHSCOPE_API_KEY；.env 不入库
+./scripts/dev.sh                         # 日志在 logs/{livekit,api,agent}.log，Ctrl-C 全部停止
+curl -X POST http://127.0.0.1:8000/v1/session -H 'Content-Type: application/json' \
+  -d '{"invite_code":"dev-invite-code-01","athlete_id":"'"$(uuidgen)"'"}'
+
+# 端到端冒烟（需要上面的服务在跑和真 Key；macOS say 提问，合成指标帧）
+cd server && uv run python tests/e2e/smoke_voice.py --invite dev-invite-code-01
+
 # CoachKit
 cd apple/CoachKit
 swift test
@@ -107,3 +121,11 @@ open apple/CoachW.xcodeproj              # 先跑过上面任一条生成工程
 需要 macOS + Xcode（Swift 6）、uv 和 XcodeGen。`apple/CoachW.xcodeproj` 由 `project.yml` 生成，不入库，改工程只改 `project.yml`。`apple/Watch/Info.plist` 和两个 `.entitlements` 也由 XcodeGen 生成，入库是为了审阅，改动以 `project.yml` 为准。
 
 HealthKit、镜像会话只能在真机上验证，模拟器构建通过不代表能用。
+
+服务端说明：
+
+- `dev.sh` 读仓库根目录的 `.env`，已在 shell 里设置的变量优先（例如 `COACHW_SESSION_MAX_MINUTES=1 ./scripts/dev.sh`）。改了 Agent 代码要重启 `dev.sh`，`dev` 模式不再自动重载。
+- 找 `livekit-server` 的顺序：`LIVEKIT_SERVER_BIN`、PATH、`.tools/bin/`；都没有时 `scripts/install-livekit.sh` 从源码编译（darwin-arm64）。
+- Agent 用 INFO 日志级别。DEBUG 会打印对话文本，可能包含健康数据。
+- 冒烟结果写到 `artifacts/smoke_voice.json`（不入库）。改提示词、工具或升级 LiveKit / 插件后要跑一遍，并把结论写进 spec 14.1。
+- 部署步骤见 `deploy/README.md`。

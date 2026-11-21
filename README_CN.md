@@ -8,7 +8,7 @@
 
 跑步优先，然后是骑行和散步（散步时它更像一个聊天伙伴而不是教练）。Apple Watch 支持的其他运动由通用档案覆盖。
 
-> 状态：M1。手表到 iPhone 的数据通路已写好，尚未真机验收；还没有教练。见 [`docs/spec.md`](docs/spec.md)。
+> 状态：M1 数据通路已写好，待真机验收。M2 服务端（教练 Agent、邀请制 token API、部署文件）已在本机端到端跑通；尚未部署，iPhone App 也还没接上。见 [`docs/spec.md`](docs/spec.md)。
 
 ## 工作方式
 
@@ -34,7 +34,7 @@ apple/CoachKit/     Swift 包：线协议和与平台无关的逻辑
 apple/iOS, Watch/   iPhone 和 watchOS App（M1）
 server/             Python：教练 Agent、token API、运动档案
 protocol/fixtures/  线协议规范样例，两端共用
-deploy/             LiveKit + Agent 的 docker compose（M2）
+deploy/             docker compose：Caddy、LiveKit、token API、教练 Agent
 docs/               设计文档和准备清单
 ```
 
@@ -43,10 +43,12 @@ docs/               设计文档和准备清单
 需要 macOS + Xcode（Swift 6）和 [uv](https://docs.astral.sh/uv/)。
 
 ```sh
-./scripts/check.sh
+./scripts/check.sh      # 全部检查，提交前必须通过
+cp .env.example .env    # 填 DASHSCOPE_API_KEY
+./scripts/dev.sh        # 本机起 LiveKit + token API + 教练 Agent，不需要 Docker
 ```
 
-需要准备的账号、设备和服务器见 [`docs/setup.md`](docs/setup.md)，贡献规则见 [`AGENTS.md`](AGENTS.md)。
+部署到服务器见 [`deploy/README.md`](deploy/README.md)。需要准备的账号、设备和服务器见 [`docs/setup.md`](docs/setup.md)，贡献规则见 [`AGENTS.md`](AGENTS.md)。
 
 ## 许可
 

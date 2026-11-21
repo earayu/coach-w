@@ -8,7 +8,7 @@
 |---|---|---|---|
 | Apple Developer Program（个人即可，99 美元/年） | HealthKit、watchOS App 真机调试、TestFlight | 维护者 | [x] 个人团队 `PX6VJ5XLCG`，已在本机 Xcode 登录 |
 | Bundle ID 与 HealthKit 能力 | iOS `com.earayu.coachw`、手表 `com.earayu.coachw.watchkitapp` | — | [x] 2026-11-21 由自动签名注册，描述文件含 HealthKit |
-| DashScope API Key（Qwen Realtime） | 服务端教练 Agent | 维护者（voicelab 已有） | [ ] |
+| DashScope API Key（Qwen Realtime） | 服务端教练 Agent | 维护者（voicelab 已有） | [x] 2026-11-21 本机冒烟用过（放在本机 `.env`）；部署时放进服务器的 `deploy/.env` |
 | GitHub 仓库 `earayu/coach-w` | 代码 | — | [x] |
 
 密钥只放在本机 `.env` 或服务器环境变量里，**不入库**。
@@ -28,7 +28,7 @@
 |---|---|---|
 | 云主机 | 2 核 4G 起，公网 IP；地域见 spec 第 10 节（未备案选香港） | [ ] |
 | 域名 | 一个子域名，如 `coach.example.com`，A 记录指向主机 | [ ] |
-| 安全组 | 放通 443/TCP、7881/TCP、3478/UDP、50000–60000/UDP（部署时以 LiveKit 文档核对） | [ ] |
+| 安全组 | 放通 80/TCP、443/TCP、7881/TCP、50000–60000/UDP（已按 LiveKit 文档核对，见 spec 第 10 节和 `deploy/README.md`） | [ ] |
 | SSH 访问 | coding agent 部署用的 SSH 密钥 | [ ] |
 
 ## 4. 本机开发环境
