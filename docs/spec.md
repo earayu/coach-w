@@ -4,7 +4,7 @@
 |---|---|
 | 版本 | v0.1 |
 | 日期 | 2026-11-21 |
-| 状态 | 草案。M1 待真机验收；M2 服务端已在本机跑通，iOS 接入未开始（第 13 节）。 |
+| 状态 | 草案。M1 待户外真机验收；M2 服务端已部署上云，iOS 已接入 LiveKit（手机端开口对话待实测）；M3 教练大脑代码完成，待真实跑步验收（第 13 节）。 |
 
 这是 coach-w 最核心的文档。产品范围、领域模型、架构、技术选型都以本文为准；改动这些内容时先改本文，再改代码。
 
@@ -133,9 +133,9 @@ MetricsFrame ─▶ MetricsState（多窗口趋势）
 ### 4.2 原则：时机由确定性代码决定，表达交给模型
 
 - **说不说、什么时候说**由 Director、EventEngine、CueQueue 决定，是可测试的普通代码。
-- **怎么说**交给实时模型：CueQueue 放行一条 cue 时，调用 `generate_reply(instructions=...)`，指令里带上事实（"心率 178，已连续 25 秒高于 Z4 上限 172"）和语气要求，模型说成一句自然的话。
+- **怎么说**交给实时模型：CueQueue 放行一条 cue 时调用 `generate_reply`，内容里带上事实（"心率 178，已连续 25 秒高于 Z4 上限 172"）和语气要求，模型说成一句自然的话。Qwen 下以**用户角色的文字消息**（`generate_reply(user_input=...)`，以"【教练提示】"开头）传入，而不是 `instructions=`：后者被插件做成会话中途的 system 消息，Qwen 实测基本不理会，回答的是最后一条用户消息（14.1）。系统提示词说明【教练提示】不是用户说的话。
 - **自由对话**是实时模型的正常行为。用户问数据时，模型必须调用工具（`get_metrics` 等），系统提示词里明确禁止估计数字。
-- 每 30–60 秒向会话写入一条**不触发回复**的文本状态摘要，让对话时模型知道运动进行到哪里。
+- 每 30–60 秒向会话写入一条**不触发回复**的文本状态摘要，让对话时模型知道运动进行到哪里。摘要只写阶段、大致用时和距离、目标、是否静音，**不写心率、配速这类随时变化的数字**：模型会沿用记住的旧数字（14.2），这类数字只能来自本轮工具结果或 cue 指令。
 
 ### 4.3 Director：一次运动的时间线
 
@@ -174,6 +174,39 @@ Qwen Realtime 的 function calling 经 `livekit-plugins-aliyun` 1.8.10 端到端
 
 工具结果以 JSON 字符串返回（框架会把非字符串结果 `str()` 成 Python 表示）。不可用时的退路仍是"每次 cue 的指令里带上最新指标"。
 
+M3 的工具：
+
+| 工具 | 返回 |
+|---|---|
+| `get_metrics` | 最新一帧里有的指标、`age_s`、`pace_per_km`；超过 10 秒没有新帧时 `available: false`；不含坐标 |
+| `get_progress` | 阶段、用时、距离、最近 5 个分段（用时和分段平均值）、目标与剩余距离、静音剩余时间 |
+| `set_quiet(minutes)` | 静音 0–30 分钟（0 取消），期间只放行紧急 cue |
+| `end_workout_summary` | 总用时、距离、档案关心的各指标全程平均值及口语读法、能量、全部分段、最快 / 最慢分段、各类提醒次数 |
+| `adjust_target_pace(pace_min, pace_sec, goal_km?)`（跑步档案） | 设置或取消目标配速（2'30"–15'00"），可同时设置目标距离（0–100 公里） |
+
+档案工具在收到第一帧、知道运动类型后才注册到会话（`Agent.update_tools`），同时把档案的提示词片段追加到系统提示词（`update_instructions`）。
+
+### 4.8 实现（M3，`server/src/coachw/coach/`）
+
+```text
+coach.metrics ─▶ CoachBrain.on_frame ─▶ MetricsState
+                                    （按 activity 选档案，换运动类型时重建状态）
+CoachLoop（每秒一次）─▶ CoachBrain.tick ─▶ EventEngine + Director ─▶ CueQueue
+                     │                                              │ Delivery
+                     ├─▶ session.interrupt()（紧急且教练在说话）       │
+                     ├─▶ session.generate_reply(user_input=…)  ◀───┘
+                     ├─▶ coach.cue（有震动的 cue）
+                     └─▶ 每 45 秒 Agent.inject_status（空闲时）
+```
+
+- **`MetricsState`**（`metrics_state.py`）：时间轴用手表的 `elapsed_s`，所以手机后台恢复时批量补发的帧也落在正确位置；新鲜度用服务端收帧时间，超过 10 秒判为过期。只有 `state == running` 的帧进入窗口、分段和基线。提供任意长度的滑动窗口（均值 / 最值，至少 3 个样本、覆盖窗口 60% 才算数，例如 10 / 30 / 60 / 120 秒）、"连续满足条件多久"（缺测的样本打断连续）、按档案分段长度切分（跨分段点时线性插值）、基线（档案定义的时间段，跑步为第 5–15 分钟，用来做前后半程对比）、全程均值。只保留最近 5 分钟的样本，坐标不进入任何聚合。
+- **`EventEngine`**（`events.py`）：通用规则类型 `Sustained`（连续高于 / 低于阈值多久）、`WindowVsBaseline`（窗口均值相对基线变化）、`WindowVsTarget`（窗口均值偏离目标，可先换算成配速等单位）、`SplitTrend`（连续几个分段单向变化）。阈值可以是常数，也可以是会话目标的名字，**目标或传感器缺失时规则不触发**；数据过期或 workout 暂停时全部规则静默；规则可设起始时间（例如热身期间不提配速）。
+- **`Director`**（`director.py`）：阶段按档案定义（按用时或按目标距离比例进入）；节点：开始、阶段切换、每个分段、半程、最后一个分段、完成目标、结束，每个只触发一次；手表数据中断 30 秒提示一次；没有节点时按档案间隔发陪伴 cue；档案定义的时长（跑步 5 分钟）内没有纠正或紧急提醒时，间隔乘以档案的"平稳系数"。
+- **`CueQueue`**（`cue_queue.py`）：4.5 的全部规则。同一冷却键已在队列里时不重复入队，更紧急的替换掉不那么紧急的；不那么紧急的 cue 的冷却挡不住更紧急的（心率"偏高"刚播过，"过高"照样能播），反之更紧急的播过后同键的次级提醒在其冷却期内不再出现。密度：非紧急 cue 每滚动一分钟不超过档案上限，两条之间至少间隔档案的 `min_gap_s`；紧急 cue 不受密度和静音限制。用户说话（`user_state == speaking`）或教练说话 / 思考（`agent_state` 为 `speaking` / `thinking`）时只放行紧急 cue，教练在说话时紧急 cue 先 `interrupt()` 再说。开启静音时清掉队列里的非紧急 cue。
+- **`CoachBrain`**（`brain.py`）：一个会话一个，按 `athlete_id` 区分，全部是内存态。把 cue 转成给模型的指令（"【教练提示】事实 + 语气要求 + 只用这里的数字"），有震动的紧急 / 纠正 / 节点 cue 同时生成 `coach.cue`（陪伴 cue 不震动）。也负责回答工具。
+- **Agent 接入**（`agent/loop.py`、`agent/coach.py`、`agent/worker.py`）：`CoachLoop` 每秒调用一次 `tick`；状态摘要每 45 秒替换一次（`update_chat_ctx`，删掉上一条再加新的，对话里始终只有一条摘要），只在双方都没说话时写入。日志只记 cue 的 id、类型、优先级，不记事实文本（含指标值）。
+- 运动者的最大心率还没有从手机传上来（3.1），跑步档案暂时按 190 计算心率上限（90% → 171）和安全上限（97% → 184）；`Athlete.max_hr_bpm` 已留好接缝。
+
 ## 5. 运动档案（Activity Profile）
 
 ### 5.1 结构
@@ -201,6 +234,31 @@ Qwen Realtime 的 function calling 经 `livekit-plugins-aliyun` 1.8.10 端到端
 | 通用兜底 | P1 | 心率、时长、卡路里 | 覆盖其余所有类型，陪伴模式 |
 | 力量 / HIIT | P2 | 心率 | 只能按组间休息和心率引导 |
 | 游泳 | 不做语音 | — | 只做手表震动 |
+
+### 5.3 实现（M3）
+
+- 结构是 `profiles/base.py` 的 `ActivityProfile`（冻结的 dataclass）：`activity_types`、`mode`、`metrics`（字段、名称、口语读法）、`phases`、`split_m` 与分段播报文案、`rules`（4.8 的通用规则实例）、`cadence`（陪伴间隔、平稳系数、每分钟上限、最小间隔）、`prompt`、陪伴话题、默认目标、`tools`、基线时间段。
+- 注册表 `profiles/registry.py`：按线协议 `activity` 查档案，一个运动类型只能属于一个档案；没有专属档案的运动用兜底档案。
+- 兜底档案（`fallback.py`）在 M3 只是最小版本：陪伴模式、只看心率和时长、一条心率安全规则。完整的兜底、散步、骑行档案在 M4。
+- 测试 `tests/test_profiles.py` 检查 `coach/` 里没有出现运动类型名字。
+
+跑步档案（`running.py`）：
+
+| 项 | 内容 |
+|---|---|
+| 模式 | 教练 |
+| 阶段 | 热身（开始）→ 主训练（10 分钟后）→ 放松（完成目标距离 90%，需设目标）；准备 / 结束由内核给出 |
+| 分段 | 每公里，播报用时、平均心率、平均步频 |
+| 心率过高（紧急） | 连续 15 秒高于安全上限；冷却 90 秒；震动 `failure` |
+| 心率偏高（纠正） | 连续 30 秒高于目标上限；冷却 180 秒；与上一条共用冷却键；震动 `direction_down` |
+| 配速偏慢 / 偏快（纠正） | 设了目标配速、热身后，最近 60 秒平均配速偏离目标超过 15 秒/公里；冷却 180 秒；震动 `direction_up` / `direction_down` |
+| 持续掉速（纠正） | 连续 2 个公里每公里都比上一公里慢 10 秒以上；每个新分段最多一次 |
+| 步频下降（纠正） | 最近 60 秒平均步频比基线（第 5–15 分钟）低 5% 以上；冷却 5 分钟 |
+| 触地时间上升（纠正） | 最近 120 秒平均触地时间比基线高 8% 以上（即后半程跑姿走样）；冷却 10 分钟 |
+| 密度 | 陪伴每 4 分钟（平稳时 6 分钟），每分钟最多 3 条，两条至少间隔 10 秒 |
+| 工具 | `adjust_target_pace` |
+
+阈值是按常识定的初值，要在真实跑步里调（14.2）。
 
 ## 6. 数据通路
 
@@ -251,9 +309,30 @@ Qwen Realtime 的 function calling 经 `livekit-plugins-aliyun` 1.8.10 端到端
 - 除 `v`、`seq`、`ts`、`activity`、`state`、`elapsed_s` 外都可缺省；缺省表示"这次没有"，不是 0。
 - `state`：`running` / `paused` / `ended`（指 workout 状态，与运动类型无关）。
 - `ts`：手表的 Unix 毫秒时间。
-- 规范样例在 `protocol/fixtures/`，Swift（`CoachKit`）和 Python（`coachw.protocol`）的测试都解析同一份样例。**改协议时三处同一次提交改。**
+- 规范样例在 `protocol/fixtures/`，按消息命名（`metrics_frame_*`、`coach_cue_*`），Swift（`CoachKit`）和 Python（`coachw.protocol`）的测试都解析同一份样例。**改协议时三处同一次提交改。**
 
-`coach.cue`（服务端 → iPhone → 手表）与 `coach.control`（双向：开始、暂停、结束、静音）在 M3 定义。
+`coach.cue`（服务端 → iPhone → 手表）：
+
+```json
+{
+  "v": 1,
+  "id": "cue-000017",
+  "ts": 1763726460000,
+  "expires_at": 1763726475000,
+  "priority": "emergency",
+  "kind": "hr_emergency",
+  "haptic": "failure",
+  "text": "心率过高，放慢"
+}
+```
+
+- 服务端在放行一条带震动的紧急 / 纠正 / 节点 cue 时，经 LiveKit data channel（topic `coach.cue`，可靠传输，只发给房间里的运动者）下发；陪伴 cue 不发。语音照常由模型说。
+- 必填：`v`、`id`、`ts`、`expires_at`、`priority`。`ts`、`expires_at` 是服务端的 Unix 毫秒时间。`priority`：`emergency` / `correction` / `milestone` / `companion`。
+- 可缺省：`kind`（事件类型，如 `hr_emergency`、`split:3`，只用于日志和展示）、`haptic`（`notification` / `direction_up` / `direction_down` / `success` / `failure` / `retry` / `start` / `stop` / `click`，对应 `WKHapticType`；不认识的值按 `notification` 处理）、`text`（手表上显示的短文案，不含指标值）。
+- iPhone 收到后到期的直接丢弃，未到期的经镜像会话 `sendToRemoteWorkoutSession` 原样转给手表；手表再检查一次是否过期，然后震动并在表盘顶部显示文案，最多 4 秒且不超过 `expires_at`。iPhone → 手表这条通道目前只传 cue。
+- 手机和手表用自己的系统时间判断过期，依赖三端时钟大致同步（NTP），偏差会直接加减在剩余时间上。
+
+`coach.control`（双向：开始、暂停、结束、静音）在 M3 还用不到（静音由用户对教练说、模型调用 `set_quiet` 完成），推迟到 M4 有按键 / 断网兜底需求时再定义。
 
 ### 6.4 iPhone → 服务端
 
@@ -277,19 +356,22 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 
 ### 7.2 服务端实现（M2）
 
-- 教练 Agent：`server/src/coachw/agent/`。`worker.py` 是 `AgentServer` 入口（`python -m coachw.agent dev|start`），每个房间一个会话；`coach.py` 是系统提示词和工具；`metrics.py` 保存本会话最新一帧。
+- 教练 Agent：`server/src/coachw/agent/`。`worker.py` 是 `AgentServer` 入口（`python -m coachw.agent dev|start`），每个房间一个会话；`coach.py` 是系统提示词和工具；`loop.py` 是 M3 的每秒教练循环（4.8）。指标状态在 `coachw.coach.MetricsState`（M2 的 `metrics.py` 只存最新一帧，M3 并入）。
 - Agent 只接受房间里那位运动者（token 的 identity）在 `coach.metrics` 上发的帧，用 `MetricsFrame` 解析；坏帧丢弃并只记错误类型。按 `(ts, seq)` 只保留更新的帧，迟到的帧不覆盖。
 - `get_metrics` 返回最新一帧里有的指标、`age_s` 和换算好的 `pace_per_km`；超过 10 秒没有新帧时返回 `available: false`。坐标不给模型。缺省的指标不出现，不报 0。
 - 实时模型由 `coachw.providers.get_realtime_model(name)` 创建，`COACHW_PROVIDER` 默认 `qwen`；插件只在 `providers/` 里引用。
 - 同一主机预热的空闲进程数 `COACHW_AGENT_IDLE_PROCESSES`（默认 2；LiveKit 生产默认 8，2 核 4G 吃不消）；进程初始化超时放宽到 30 秒（负载高时默认 10 秒不够，实测会导致派单失败）。
-- 本机一条命令起全套：`./scripts/dev.sh`（LiveKit 二进制 + token API + Agent，日志在 `logs/`）。`./scripts/dev.sh --lan` 让同一 Wi‑Fi 下的手机连这台 Mac：LiveKit 监听所有网卡并以 en0 地址对外宣告（`--node-ip`），token API 监听 `0.0.0.0`，发给手机的 `server_url` 是 `ws://<局域网IP>:7880`。端到端冒烟：`server/tests/e2e/smoke_voice.py`，用 macOS `say` 提问，用合成指标帧，检查回答里的数字来自工具。
+- 本机一条命令起全套：`./scripts/dev.sh`（LiveKit 二进制 + token API + Agent，日志在 `logs/`）。`./scripts/dev.sh --lan` 让同一 Wi‑Fi 下的手机连这台 Mac：LiveKit 监听所有网卡并以 en0 地址对外宣告（`--node-ip`），token API 监听 `0.0.0.0`，发给手机的 `server_url` 是 `ws://<局域网IP>:7880`。端到端冒烟：`server/tests/e2e/smoke_voice.py`，用 macOS `say` 提问，用合成指标帧，检查回答里的数字来自工具；`server/tests/e2e/smoke_coach.py`（M3）从运动开始发合成帧，检查开始节点和心率过高时教练主动开口、`coach.cue` 下发、教练说话时紧急 cue 打断、`get_progress` / `set_quiet` 被调用、状态摘要不引起回复。
 
 ### 7.2.1 iOS 实现（M2）
 
 - 语音模块 `apple/iOS/Voice/`：`VoiceSession.swift` 是唯一引用 LiveKit Swift SDK（2.19.0，锁定版本）的文件；`TokenClient.swift` 调 `POST /v1/session`。
 - 身份与配置 `apple/iOS/Settings/AppSettings.swift`：`athlete_id` 首次启动生成，存钥匙串（锁屏后仍可读，`AfterFirstUnlock`）；邀请码存钥匙串；token API 地址存 UserDefaults，在 App 的"设置"里填。
 - 音频会话交给 LiveKit 的自动配置：开麦后是 `.playAndRecord`，选项含 `allowBluetoothHFP` 和 `allowBluetoothA2DP`（SDK 2.19.0 源码 `AudioSessionConfiguration.swift`）。Info.plist 开 `audio` 后台模式、麦克风说明、本地网络说明，ATS 只放开 `NSAllowsLocalNetworking`（开发时连局域网 http/ws）。
-- 指标转发：`MirrorReceiver.onFrames` 把镜像收到的每批帧（已带 `phone_ts`）交给 `VoiceSession.send`，以可靠模式发到 data channel 的 `coach.metrics`。语音没连上时不发、不缓存：教练只需要最新状态。
+- 指标转发：`MirrorReceiver.onFrames` 把镜像收到的每批帧（已带 `phone_ts`）交给 `VoiceSession.send`，以可靠模式发到 data channel 的 `coach.metrics`。按到达顺序串行发送（上一批发完再发下一批），后台恢复时补发的一批帧不会乱序。语音没连上时不发、不缓存：教练只需要最新状态。
+- 提示转发（M3）：`VoiceSession` 收 `coach.cue`，解出 `CoachKit.CoachCue`（LiveKit 类型不出语音模块），过期的丢弃，其余交给 `MirrorReceiver.sendToWatch` 经镜像会话转给手表（6.3）。手表 `WorkoutController.present` 震动（`WKInterfaceDevice.play`）并在运动表盘顶部显示文案。
+- 连接竞态：`start()` 每次带一个代数，`stop()` 让代数加一；拿 token、连房间、开麦这几步之间发现代数变了就放弃并断开刚连上的房间，所以"连接中"点结束语音后不会再连上开麦。`RoomDelegate` 回调只处理当前房间的事件。
+- 设置：邀请码和服务器地址在判断"已配置"、发请求、持久化时都去掉首尾空白和换行，设置页关闭时内存里的值也一并裁剪；服务器地址只接受 `http` / `https`（`CoachKit.ServerAddress`）。"静音"按钮只在已连接时可用。
 - 开发构建（DEBUG）可在启动时用环境变量配置：`COACHW_API_BASE_URL`、`COACHW_INVITE_CODE`（写入设置并保存），`COACHW_AUTOCONNECT=1` 启动后自动连接，方便用 `xcrun devicectl device process launch --environment-variables` 免手输测试。正式构建不读这些变量。
 - 界面：首页顶部"语音教练"一节，显示连接状态、已发送指标帧数，按钮为连接教练 / 静音 / 结束语音；右上角"设置"填邀请码和服务器地址。
 - LiveKit 的 WebRTC 二进制包约 690 MB，从 GitHub Releases 下载，国内网络下 xcodebuild 自带的下载会超时。可先用 `curl -C -` 断点续传，再按 SwiftPM 的命名放进 `~/Library/Caches/org.swift.swiftpm/artifacts/`（见 `docs/setup.md`）。
@@ -360,7 +442,7 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 
 ```text
 apple/
-  CoachKit/          SwiftPM 包：线协议、FrameBuilder、FrameStats，iOS 和 watchOS 共用
+  CoachKit/          SwiftPM 包：线协议（MetricsFrame、CoachCue）、FrameBuilder、FrameStats、ServerAddress，iOS 和 watchOS 共用
   project.yml        XcodeGen 工程定义（Bundle ID com.earayu.coachw，手表 .watchkitapp）
   Shared/            两个 App 共用、依赖 HealthKit 的小文件（运动类型表、显示格式）
   iOS/               iPhone App
@@ -369,10 +451,10 @@ server/
   src/coachw/
     protocol.py      线协议 v1
     session.py       token API 与 Agent 之间的约定：Agent 名、SessionMeta、athlete_id 校验
-    agent/           LiveKit Agent：worker（入口、会话上限）、coach（提示词、工具）、metrics（最新帧）
+    agent/           LiveKit Agent：worker（入口、会话上限）、coach（提示词、工具）、loop（每秒教练循环）
     api/             token API：app（FastAPI）、invites、quota（分钟账本）、tokens、config
-    coach/           MetricsState、Director、EventEngine、CueQueue（M3）
-    profiles/        运动档案（M3）
+    coach/           MetricsState、Director、EventEngine、CueQueue、CoachBrain（M3，4.8）
+    profiles/        运动档案：base（结构）、registry、running、fallback（M3，5.3）
     providers/       实时模型注册表；qwen.py（从 voicelab 迁移，含插件缺陷绕行，4.7）
   tests/             单元测试；tests/e2e/smoke_voice.py 是需要真 Key 的端到端冒烟，不被 pytest 收集
   Dockerfile         api 和 agent 共用的镜像
@@ -471,9 +553,25 @@ docs/                文档
 | 本地一条命令起全套：`./scripts/dev.sh` | 完成 |
 | 部署：docker compose（Caddy、LiveKit、api、agent）、`.env.example`、`deploy/README.md`、端口核对 | 完成。已部署到阿里云香港 2 核 4G（2026-11-22）：证书、token API、webhook 不对外、公网端到端语音冒烟（UDP 与 7881/TCP 回退）通过（14.1）；镜像构建和 compose 校验也在 CI |
 | 单元测试：协议解析、邀请码、分钟账本、token 内容、API、Agent 指标与工具、provider | 完成（67 个） |
-| iOS 接入 LiveKit（语音模块、发 `coach.metrics`、拿 token，见 7.2.1） | 代码完成；真机签名构建、安装到 iPhone 和手表通过（2026-11-22）。手机连本机服务、开口对话尚未实测 |
+| iOS 接入 LiveKit（语音模块、发 `coach.metrics`、拿 token，见 7.2.1） | 代码完成；真机签名构建、安装到 iPhone 和手表通过（2026-11-22）。手机连本机服务、开口对话尚未实测。QA 提出的输入裁剪、连接竞态、帧顺序、静音按钮问题已在 M3 修复（7.2.1） |
 | 局域网开发模式 `./scripts/dev.sh --lan` | 完成：手机经局域网拿到 token（`server_url` 为 `ws://<局域网IP>:7880`） |
-| 户外耳机对话（M2 完成标志） | 待 iOS 接入 |
+| 户外耳机对话（M2 完成标志） | 待维护者户外实测（iOS 已接入） |
+
+### 13.4 M3 进度
+
+| 项 | 状态 |
+|---|---|
+| `MetricsState`：多窗口、连续时长、分段（插值）、基线、过期检测（4.8） | 完成，有单元测试 |
+| `EventEngine` 与通用规则（`Sustained`、`WindowVsBaseline`、`WindowVsTarget`、`SplitTrend`），传感器 / 目标缺失不触发 | 完成，有单元测试 |
+| `Director`：阶段、每公里、半程、最后一公里、完成目标、结束、数据中断、陪伴间隔 | 完成，有单元测试 |
+| `CueQueue`：优先级、冷却、过期、不插话、静音、密度 | 完成，有单元测试 |
+| 运动档案框架、注册表、跑步档案 P0、最小兜底档案（5.3） | 完成，有单元测试；内核无运动类型分支由测试检查 |
+| 工具：`get_metrics`、`get_progress`、`set_quiet`、`end_workout_summary`、`adjust_target_pace`（4.7） | 完成，有单元测试 |
+| Agent 接入：每会话 `CoachBrain`、每秒 `CoachLoop`、`generate_reply` 表达 cue、紧急 cue 打断、45 秒状态摘要、档案提示词与工具按运动类型加载 | 完成，有单元测试（假会话）。真实模型下的表现见 14.1 / 14.2 |
+| 线协议 `coach.cue` v1：spec、fixtures、`coachw.protocol`、`CoachKit` 及双端测试（6.3） | 完成 |
+| `coach.cue` 闭环：服务端下发 → iPhone 收 → 镜像会话转手表 → 震动 + 表盘提示 | 代码完成；模拟器构建通过；真机震动待实测 |
+| M2 iOS QA 修复（输入裁剪与 scheme 校验、连接竞态、帧串行发送、静音按钮） | 完成；`ServerAddress` 有单元测试，其余为模拟器构建通过 |
+| 真实 5 公里（M3 完成标志：分段播报、超心率提醒、问配速答得对） | 待维护者实测 |
 
 ## 14. 验证记录
 
@@ -486,7 +584,11 @@ docs/                文档
 | LiveKit + Qwen Realtime（voicelab，浏览器端） | 通过（2026-11-09）。`server_vad` 打断约 0.5 秒；`smart_turn` 约 5 秒 |
 | M2 服务端本机端到端冒烟（`server/tests/e2e/smoke_voice.py`） | 通过（2026-11-21，macOS / Darwin 25.6，LiveKit 1.13.11 二进制，`livekit-agents` / `livekit-plugins-aliyun` 1.8.10，`qwen-audio-3.1-realtime-flash`，`server_vad`）。Python 客户端经 token API 拿 token 进房间，每秒发一帧合成指标（心率 137、配速 5'32"，无功率），用 macOS `say` 提问。连续 3 轮全部通过：问心率答"一百三十七"，问配速答"每公里五分三十二秒"，每次都先调用了 `get_metrics`；问功率答"现在拿不到功率数据" |
 | Qwen function calling 经 `livekit-plugins-aliyun` 1.8.10 | 可用，但需绕开插件缺陷（4.7）。修复前跑了 5 轮，心率和配速共 10 次提问只答对 2 次：工具都调用了，回答多数是重复开场白或上一句话；抓 Qwen 事件确认插件在工具返回后删掉了刚说完、尚未转写的用户语音消息 |
-| `generate_reply(instructions=...)` 在 Qwen 插件下的语义（读源码 + 事件日志） | 会话里还没有用户消息时，指令作为一条合成的**用户**文字消息插入（Qwen 要求先有用户消息才能 `response.create`）；之后作为 system 消息插入。它们留在对话历史里 |
+| `generate_reply(instructions=...)` 在 Qwen 插件下的语义（读源码 + 事件日志） | 会话里还没有用户消息时，指令作为一条合成的**用户**文字消息插入（Qwen 要求先有用户消息才能 `response.create`）；之后作为 system 消息插入。它们只在插件的上下文里，Agent 下一次 `update_chat_ctx` 时会被当作多余项从服务端删除 |
+| `generate_reply` 的排队与打断（`livekit-agents` / `livekit-plugins-aliyun` 1.8.10，读源码 + 本机实测 2026-11-22） | 排队：`generate_reply` 生成一个普通优先级的 `SpeechHandle` 进入 `AgentActivity` 的语音队列，不打断正在播的话；插件再把 `response.create` 挡到 Qwen 空闲（用户没在说话、没有进行中的轮次和回复）才发出。实测开场白还在播时放行的"开始"cue 排在开场白之后播出。打断：要先 `session.interrupt()`；`allow_interruptions=False` 在服务端 VAD 下会被忽略（框架告警）。实测教练讲故事时心率过高，cue 带 `interrupt=True` 放行，故事在句中被截断，约 1 秒后开始播报心率提醒 |
+| 会话中途的 system 消息对 Qwen 的效果（本机实测 2026-11-22，`qwen-audio-3.1-realtime-flash`） | 基本无效。用 `generate_reply(instructions=...)` 放行 cue 的 2 次运行里：一次"开始"cue 说对了、紧急 cue 却重复了上一条；另一次"开始"和紧急 cue 都重复了开场白（Qwen 事件日志确认 system 消息已建在会话末尾）。改为 `generate_reply(user_input=...)` 后连续 4 次运行，4 次开始节点和 6 次心率过高提醒全部说对，说出的数字只来自 cue |
+| M3 端到端冒烟（`server/tests/e2e/smoke_coach.py`，本机 `dev.sh`，LiveKit 1.13.11 二进制，2026-11-22） | 通过（最后两轮全部检查通过）。合成跑步帧从 0 秒开始：开场白后约 7 秒主动播报开始节点（"加油！今天心率别超过171，先慢慢热身"），收到 `coach.cue`（`start`）；心率升到 193 后约 16 秒放行紧急 cue，收到 `coach.cue`（`hr_emergency`、`failure`、有效期 15 秒），教练说"心率193，太高了！立刻放慢，必要时停下来走一走"；空闲 50 秒期间写入状态摘要，教练没有回复；问"跑了多长时间"调用 `get_progress` 并答对约 1 分 36 秒；"安静五分钟"调用 `set_quiet`；"可以说话了，讲个马拉松故事"时再次心率过高，cue 以 `interrupt=True` 放行，故事被截断，约 1 秒后播报心率提醒。日志无循环错误 |
+| M2 冒烟在 M3 代码下复跑（`smoke_voice.py`，本机，2026-11-22） | 心率答 137、配速答每公里 5 分 32 秒、功率答没有数据，数字都对；但问配速那一轮没有重新调用 `get_metrics`（沿用上一轮工具结果，见 14.2），检查项 `pace_tool_called` 未过。会话中途加入（帧的 `elapsed_s` 从 600 开始）时没有播"开始"、也没有把加入前的分段当成本次分段 |
 | token API 与分钟上限（本机，经 `dev.sh`） | 通过（2026-11-21）。合法码 200、非法码 401、预占用完 429；加入 10 秒后离开，webhook 把预占结算为约 11 秒，下一次签发的上限据此计算；会话上限 60 秒时 Agent 在 60 秒说告别并删房间，客户端 67 秒被断开 |
 | Caddyfile 路由（本机 Caddy 2.11.9，域名 localhost） | 通过（2026-11-21）。`/v1/session` 到 API（200 / 401），其余到 LiveKit（`/` 返回 OK，`/rtc` 无效 token 返回 401），`/livekit/webhook` 不对外（404） |
 | 服务端上云部署（阿里云香港 `ecs.e-c1m2.large` 2 核 4G，Ubuntu 24.04.5，内核 6.8，Docker 29.10.0，Compose v5.8.0） | 通过（2026-11-22）。`docker compose up -d --build` 一次起来四个容器；Caddy 启动后约 8 秒拿到 Let's Encrypt 证书（颁发者 YE2，90 天）。LiveKit 以 `NODE_IP` 对外宣告，Agent 注册为 `coach-w` 并预热 2 个进程。从本机 Mac 经公网：`/` 返回 OK；`POST /v1/session` 合法码 200，`server_url` 为 `wss://<域名>`，非法码 401；`/livekit/webhook` 和 `/healthz` 返回 404；`:8081` 公网不可达。发现 Agent 健康检查默认监听所有网卡（安全组没放通，但仍改为只绑 127.0.0.1），Docker 日志默认不轮转（已加上限） |
@@ -501,9 +603,12 @@ docs/                文档
 - 指标帧实际频率（心率、配速的更新间隔）。
 - iPhone 经局域网连本机服务：拿 token、进房间、教练开场白、开口对话、`coach.metrics` 转发后问心率答得对。
 - LiveKit 自动音频会话在锁屏和韶音耳机（HFP）下的表现。
-- `generate_reply(instructions=...)` 在 Qwen 插件下的打断与排队行为（M3 的 cue 依赖它）。
 - 工具调用带来的额外回答延迟（冒烟只验证了正确性，没测延迟）。
-- 同一会话里数值未变时，模型是否每次提问都重新调用 `get_metrics`（公网 TCP 冒烟里有一次直接复用了上一轮工具结果）。M3 指标随时变化，复用旧值会说错，需在提示词或工具结果的过期时间上约束。
+- 同一会话里数值未变时，模型是否每次提问都重新调用 `get_metrics`（公网 TCP 冒烟和 M3 本机复跑各有一次直接复用了上一轮工具结果）。真实跑步中指标随时变化，复用旧值会说错，需在提示词或工具结果的过期时间上约束。
+- M3 规则阈值（5.3）在真实跑步里是否合适：心率默认按最大心率 190 推算，步频 / 触地时间的基线和变化比例、掉速 10 秒、配速容差 15 秒都是初值；Series 8 是否真的上报触地时间（规则缺数据时不触发）。
+- 真实跑步中的说话密度：节点、纠正、陪伴加起来是否太吵或太少；状态摘要（system 消息）是否真的被 Qwen 用作背景（实测不会引起回复，但效果没法单独验证）。
+- `coach.cue` 真机闭环：iPhone 经镜像会话转发到手表的延迟、手表震动和表盘提示（只做了模拟器构建）；手机和手表时钟偏差对过期判断的影响。
+- 用户角色的【教练提示】留在对话历史里，长时间运动后对上下文长度和模型行为的影响。
 - 多路并发会话时 2 核 4G 的 CPU / 内存余量（只测了单路），以及 LiveKit Agents 生产默认 `load_threshold` 0.7 是否会让 worker 过早拒单。
 - 手机经公网连生产服务（iOS App 指向 `https://<域名>`）。
 - 移动网络下是否需要 TURN/TLS（第 10 节）。

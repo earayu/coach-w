@@ -12,19 +12,21 @@ coach-w 是一个实时语音运动教练：Apple Watch 采集运动指标，iPh
 
 ## 当前状态
 
-进度见 `docs/spec.md` 13.1–13.3。已有：文档、线协议 v1（`protocol/fixtures/`、`apple/CoachKit`、`server/src/coachw/protocol.py`）、CI；iOS + watchOS App 的数据通路（手表采集 → 镜像会话 → iPhone 显示），已在真机跑通，户外锁屏实测待做。M2 服务端（教练 Agent、token API、部署文件）已部署到阿里云香港 2 核 4G，公网端到端语音冒烟通过（部署与复测见 `deploy/README.md`）；iOS 已接入 LiveKit（语音、转发指标），可用 `./scripts/dev.sh --lan` 在局域网内连本机服务。
+进度见 `docs/spec.md` 13.1–13.4。已有：文档、线协议 v1（`protocol/fixtures/`、`apple/CoachKit`、`server/src/coachw/protocol.py`）、CI；iOS + watchOS App 的数据通路（手表采集 → 镜像会话 → iPhone 显示），已在真机跑通，户外锁屏实测待做。M2 服务端（教练 Agent、token API、部署文件）已部署到阿里云香港 2 核 4G，公网端到端语音冒烟通过（部署与复测见 `deploy/README.md`）；iOS 已接入 LiveKit（语音、转发指标），可用 `./scripts/dev.sh --lan` 在局域网内连本机服务。M3 教练大脑（MetricsState / Director / EventEngine / CueQueue、跑步档案、教练工具、`coach.cue` 手表震动）代码完成，本机端到端冒烟通过，待真实跑步验收。
 
 代码地图：
 
-- `apple/Watch/WorkoutController.swift`：手表主 workout 会话、采集、发帧
+- `apple/Watch/WorkoutController.swift`：手表主 workout 会话、采集、发帧；收 `coach.cue`、震动、表盘提示（`ContentView.swift` 的 `CueBanner`）
 - `apple/Watch/HealthReadings.swift`：HealthKit 统计 → 线协议单位
-- `apple/iOS/MirrorReceiver.swift`：iPhone 接镜像会话、解帧、统计
+- `apple/iOS/MirrorReceiver.swift`：iPhone 接镜像会话、解帧、统计；`sendToWatch` 把 `coach.cue` 转给手表
 - `apple/Shared/WorkoutActivity.swift`：UI 可选运动与 HealthKit / 线协议的映射表、HealthKit 权限类型
-- `apple/iOS/Voice/VoiceSession.swift`：唯一引用 LiveKit 的文件；连房间、开麦、把指标帧发到 `coach.metrics`。`TokenClient.swift`：调 token API
+- `apple/iOS/Voice/VoiceSession.swift`：唯一引用 LiveKit 的文件；连房间（带代数防 start/stop 竞态）、开麦、按序把指标帧发到 `coach.metrics`、收 `coach.cue`。`TokenClient.swift`：调 token API
 - `apple/iOS/Settings/AppSettings.swift`：`athlete_id`、邀请码（钥匙串）、token API 地址
-- `apple/CoachKit`：`MetricsFrame`（线协议）、`FrameBuilder`（合并读数、节流、推算步频）、`FrameStats`（收端统计）
+- `apple/CoachKit`：`MetricsFrame`、`CoachCue`（线协议）、`FrameBuilder`（合并读数、节流、推算步频）、`FrameStats`（收端统计）、`ServerAddress`（设置里的服务器地址校验）
 - `server/src/coachw/session.py`：token API 与 Agent 的约定（Agent 名 `coach-w`、签进 token 的 `SessionMeta`）
-- `server/src/coachw/agent/worker.py`：Agent 入口、订阅 `coach.metrics`、会话时长上限；`coach.py`：系统提示词和 `get_metrics`；`metrics.py`：每会话最新帧和工具结果
+- `server/src/coachw/agent/worker.py`：Agent 入口、订阅 `coach.metrics`、下发 `coach.cue`、会话时长上限；`coach.py`：系统提示词、工具、档案工具包装、状态摘要；`loop.py`：每秒教练循环（cue → `generate_reply(user_input=...)`、紧急打断、状态摘要）
+- `server/src/coachw/coach/`：通用教练内核，不出现运动类型（spec 4.8）。`metrics_state.py`（窗口、连续时长、分段、基线）、`events.py`（`CoachEvent`、通用规则、`EventEngine`）、`director.py`（阶段、节点、陪伴）、`cue_queue.py`（优先级 / 冷却 / 过期 / 不插话 / 静音 / 密度）、`brain.py`（每会话编排与工具结果）、`format.py`
+- `server/src/coachw/profiles/`：运动档案（spec 5.3）。`base.py`（`ActivityProfile`）、`registry.py`（`activity` → 档案）、`running.py`（P0 跑步）、`fallback.py`（最小兜底，M4 完善）
 - `server/src/coachw/providers/`：实时模型注册表；`qwen.py` 含 `livekit-plugins-aliyun` 工具调用缺陷的绕行（spec 4.7），升级插件前先跑冒烟
 - `server/src/coachw/api/`：`app.py`（`POST /v1/session`、LiveKit webhook）、`invites.py`、`quota.py`（每日分钟账本）、`tokens.py`、`config.py`（环境变量）
 - `deploy/`：docker compose、Caddyfile、`livekit.yaml`（生产）/ `livekit.dev.yaml`（本机）、`.env.example`；`server/Dockerfile`
@@ -109,6 +111,7 @@ curl -X POST http://127.0.0.1:8000/v1/session -H 'Content-Type: application/json
 
 # 端到端冒烟（需要上面的服务在跑和真 Key；macOS say 提问，合成指标帧）
 cd server && uv run python tests/e2e/smoke_voice.py --invite dev-invite-code-01
+cd server && uv run python tests/e2e/smoke_coach.py --invite dev-invite-code-01   # M3：主动 cue、coach.cue、打断、工具
 
 # CoachKit
 cd apple/CoachKit
@@ -129,5 +132,7 @@ HealthKit、镜像会话只能在真机上验证，模拟器构建通过不代�
 - `dev.sh` 读仓库根目录的 `.env`，已在 shell 里设置的变量优先（例如 `COACHW_SESSION_MAX_MINUTES=1 ./scripts/dev.sh`）。改了 Agent 代码要重启 `dev.sh`，`dev` 模式不再自动重载。
 - 找 `livekit-server` 的顺序：`LIVEKIT_SERVER_BIN`、PATH、`.tools/bin/`；都没有时 `scripts/install-livekit.sh` 从源码编译（darwin-arm64）。
 - Agent 用 INFO 日志级别。DEBUG 会打印对话文本，可能包含健康数据。
-- 冒烟结果写到 `artifacts/smoke_voice.json`（不入库）。改提示词、工具或升级 LiveKit / 插件后要跑一遍，并把结论写进 spec 14.1。
+- 冒烟结果写到 `artifacts/smoke_voice.json`、`artifacts/smoke_coach.json`（不入库）。改提示词、工具、教练编排或升级 LiveKit / 插件后要跑一遍，并把结论写进 spec 14.1。
+- 教练逻辑的单元测试用 `server/tests/synth.py` 的合成跑步（`Clock`、`Runner`），不依赖模型。
+- Qwen 会忽略会话中途的 system 消息：要让模型主动说的话用 `generate_reply(user_input=...)`（spec 4.2、14.1）。
 - 部署步骤见 `deploy/README.md`。

@@ -3,7 +3,14 @@ from pathlib import Path
 
 import pytest
 
-from coachw.protocol import MetricsFrame, ProtocolError, WorkoutState
+from coachw.protocol import (
+    CoachCue,
+    CuePriority,
+    Haptic,
+    MetricsFrame,
+    ProtocolError,
+    WorkoutState,
+)
 
 FIXTURES = Path(__file__).resolve().parents[2] / "protocol" / "fixtures"
 
@@ -29,7 +36,9 @@ def test_missing_metrics_stay_none():
     assert frame.lat is None
 
 
-@pytest.mark.parametrize("path", sorted(FIXTURES.glob("*.json")), ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    "path", sorted(FIXTURES.glob("metrics_frame_*.json")), ids=lambda p: p.name
+)
 def test_every_fixture_round_trips(path: Path):
     data = json.loads(path.read_text())
     frame = MetricsFrame.from_dict(data)
@@ -62,3 +71,55 @@ def test_rejects_missing_required():
     del data["elapsed_s"]
     with pytest.raises(ProtocolError):
         MetricsFrame.from_dict(data)
+
+
+def test_fixtures_are_named_after_their_message():
+    names = [p.name for p in FIXTURES.glob("*.json")]
+    assert names
+    assert all(n.startswith(("metrics_frame_", "coach_cue_")) for n in names)
+
+
+def test_cue_full_fixture():
+    cue = CoachCue.from_dict(load("coach_cue_v1_full.json"))
+    assert cue.id == "cue-000017"
+    assert cue.priority is CuePriority.EMERGENCY
+    assert cue.haptic is Haptic.FAILURE
+    assert cue.expires_at - cue.ts == 15000
+    assert cue.text == "心率过高，放慢"
+
+
+def test_cue_minimal_fixture():
+    cue = CoachCue.from_dict(load("coach_cue_v1_minimal.json"))
+    assert cue.priority is CuePriority.MILESTONE
+    assert cue.haptic is None and cue.text is None and cue.kind is None
+
+
+@pytest.mark.parametrize("path", sorted(FIXTURES.glob("coach_cue_*.json")), ids=lambda p: p.name)
+def test_every_cue_fixture_round_trips(path: Path):
+    data = json.loads(path.read_text())
+    cue = CoachCue.from_dict(data)
+    assert cue.to_dict() == data
+    assert CoachCue.from_json(cue.to_json()) == cue
+
+
+def test_cue_expiry():
+    cue = CoachCue.from_dict(load("coach_cue_v1_minimal.json"))
+    assert not cue.is_expired(cue.expires_at - 1)
+    assert cue.is_expired(cue.expires_at)
+
+
+def test_unknown_haptic_falls_back():
+    cue = CoachCue.from_dict(load("coach_cue_v1_full.json") | {"haptic": "rumble"})
+    assert cue.haptic is Haptic.NOTIFICATION
+
+
+@pytest.mark.parametrize("patch", [{"v": 2}, {"priority": "urgent"}])
+def test_rejects_bad_cues(patch: dict):
+    with pytest.raises(ProtocolError):
+        CoachCue.from_dict(load("coach_cue_v1_minimal.json") | patch)
+
+
+def test_priority_rank_order():
+    ranks = [p.rank for p in CuePriority]
+    assert ranks == sorted(ranks, reverse=True)
+    assert CuePriority.EMERGENCY.rank > CuePriority.COMPANION.rank

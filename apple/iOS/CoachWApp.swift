@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     ) -> Bool {
         MirrorReceiver.shared.install()
         MirrorReceiver.shared.onFrames = { VoiceSession.shared.send($0) }
+        VoiceSession.shared.onCue = { MirrorReceiver.shared.sendToWatch($0) }
         return true
     }
 }

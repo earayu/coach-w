@@ -1,3 +1,4 @@
+import CoachKit
 import Foundation
 import Observation
 import Security
@@ -44,16 +45,29 @@ final class AppSettings {
     /// Generated once per install, kept in the Keychain. The only identity the server sees.
     let athleteID: String
 
+    /// As typed. Stored, compared and sent trimmed: pasted codes often carry a trailing newline.
     var inviteCode: String {
-        didSet { Keychain.set("invite_code", inviteCode.trimmingCharacters(in: .whitespaces)) }
+        didSet { Keychain.set("invite_code", inviteCode.trimmedForSettings) }
     }
 
     /// Token API base URL, e.g. `https://coach.example.com` or `http://192.168.1.10:8000` in development.
     var apiBaseURL: String {
-        didSet { UserDefaults.standard.set(apiBaseURL, forKey: "api_base_url") }
+        didSet { UserDefaults.standard.set(apiBaseURL.trimmedForSettings, forKey: "api_base_url") }
     }
 
-    var isConfigured: Bool { !inviteCode.isEmpty && URL(string: apiBaseURL)?.host != nil }
+    var trimmedInviteCode: String { inviteCode.trimmedForSettings }
+
+    /// Only `http` / `https` with a host counts as configured.
+    var serverURL: URL? { ServerAddress.parse(apiBaseURL) }
+
+    var isConfigured: Bool { !trimmedInviteCode.isEmpty && serverURL != nil }
+
+    /// Drops surrounding whitespace from the in-memory values too, e.g. when the settings close.
+    func normalize() {
+        if inviteCode != trimmedInviteCode { inviteCode = trimmedInviteCode }
+        let url = apiBaseURL.trimmedForSettings
+        if apiBaseURL != url { apiBaseURL = url }
+    }
 
     private init() {
         if let existing = Keychain.get("athlete_id") {
@@ -62,17 +76,17 @@ final class AppSettings {
             athleteID = UUID().uuidString.lowercased()
             Keychain.set("athlete_id", athleteID)
         }
-        inviteCode = Keychain.get("invite_code") ?? ""
-        apiBaseURL = UserDefaults.standard.string(forKey: "api_base_url") ?? ""
+        inviteCode = (Keychain.get("invite_code") ?? "").trimmedForSettings
+        apiBaseURL = (UserDefaults.standard.string(forKey: "api_base_url") ?? "").trimmedForSettings
         #if DEBUG
         // Development builds can be configured at launch, e.g.
         // `xcrun devicectl device process launch --environment-variables '{"COACHW_API_BASE_URL": "..."}'`
         let env = ProcessInfo.processInfo.environment
-        if let url = env["COACHW_API_BASE_URL"] {
+        if let url = env["COACHW_API_BASE_URL"]?.trimmedForSettings {
             apiBaseURL = url
             UserDefaults.standard.set(url, forKey: "api_base_url")
         }
-        if let code = env["COACHW_INVITE_CODE"] {
+        if let code = env["COACHW_INVITE_CODE"]?.trimmedForSettings {
             inviteCode = code
             Keychain.set("invite_code", code)
         }

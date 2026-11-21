@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "id": "cue-000017",
+  "ts": 1763726460000,
+  "expires_at": 1763726475000,
+  "priority": "emergency",
+  "kind": "hr_emergency",
+  "haptic": "failure",
+  "text": "心率过高，放慢"
+}

@@ -7,8 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 from coachw.agent.coach import INSTRUCTIONS
-from coachw.agent.metrics import STALE_AFTER_S, LatestMetrics, format_pace
 from coachw.agent.worker import end_when_cap_reached, make_metrics_listener, read_session_meta
+from coachw.coach.brain import CoachBrain
+from coachw.coach.format import format_pace
+from coachw.coach.metrics_state import STALE_AFTER_S, MetricsState
+from coachw.profiles.base import Athlete
 from coachw.protocol import METRICS_TOPIC, MetricsFrame
 from coachw.session import SessionMeta
 
@@ -29,13 +32,13 @@ def frame(**patch) -> MetricsFrame:
 
 
 def test_no_frame_yet():
-    snap = LatestMetrics().snapshot()
+    snap = MetricsState().snapshot()
     assert snap["available"] is False
 
 
 def test_snapshot_reports_frame_without_coordinates():
     clock = Clock()
-    store = LatestMetrics(clock)
+    store = MetricsState(clock=clock)
     store.update(frame())
     clock.now += 1.5
     snap = store.snapshot()
@@ -48,7 +51,7 @@ def test_snapshot_reports_frame_without_coordinates():
 
 
 def test_missing_metrics_are_omitted_not_zero():
-    store = LatestMetrics()
+    store = MetricsState()
     store.update(MetricsFrame.from_json((FIXTURES / "metrics_frame_v1_minimal.json").read_text()))
     snap = store.snapshot()
     assert "hr_bpm" not in snap and "pace_per_km" not in snap
@@ -56,7 +59,7 @@ def test_missing_metrics_are_omitted_not_zero():
 
 def test_stale_frame_is_not_current():
     clock = Clock()
-    store = LatestMetrics(clock)
+    store = MetricsState(clock=clock)
     store.update(frame())
     clock.now += STALE_AFTER_S + 1
     snap = store.snapshot()
@@ -65,12 +68,12 @@ def test_stale_frame_is_not_current():
 
 
 def test_late_frames_never_overwrite_newer():
-    store = LatestMetrics()
+    store = MetricsState()
     assert store.update(frame(seq=10, ts=2000, hr_bpm=150))
     assert not store.update(frame(seq=9, ts=1000, hr_bpm=99))
     assert not store.update(frame(seq=10, ts=2000, hr_bpm=99))
     assert store.update(frame(seq=11, ts=3000, hr_bpm=151))
-    assert store.frame.hr_bpm == 151
+    assert store.latest.hr_bpm == 151
 
 
 @pytest.mark.parametrize(
@@ -84,24 +87,29 @@ def packet(data: bytes, topic: str = METRICS_TOPIC, identity: str = "athlete"):
     return SimpleNamespace(data=data, topic=topic, participant=SimpleNamespace(identity=identity))
 
 
+def brain() -> CoachBrain:
+    return CoachBrain(Athlete(athlete_id=str(uuid.uuid4())))
+
+
 def test_listener_takes_metrics_only_from_the_athlete():
-    store = LatestMetrics()
-    on_data = make_metrics_listener(store, "athlete")
+    b = brain()
+    on_data = make_metrics_listener(b, "athlete")
     raw = json.dumps(FULL).encode()
     on_data(packet(raw, topic="other"))
     on_data(packet(raw, identity="someone-else"))
-    assert store.frame is None
+    assert b.state.latest is None
     on_data(packet(raw))
-    assert store.frame.seq == 128
+    assert b.state.latest.seq == 128
+    assert b.profile.name == "running"
 
 
 def test_listener_drops_bad_frames():
-    store = LatestMetrics()
-    on_data = make_metrics_listener(store, "athlete")
+    b = brain()
+    on_data = make_metrics_listener(b, "athlete")
     on_data(packet(b"not json"))
     on_data(packet(json.dumps(FULL | {"v": 2}).encode()))
     on_data(packet(b"[]"))
-    assert store.frame is None
+    assert b.state.latest is None
 
 
 def test_session_meta_from_participant():
@@ -116,7 +124,7 @@ def test_session_meta_fallback(monkeypatch):
 
 
 def test_tool_result_is_plain_json():
-    store = LatestMetrics()
+    store = MetricsState()
     store.update(frame())
     data = json.loads(json.dumps(store.snapshot()))
     assert data["state"] == "running"

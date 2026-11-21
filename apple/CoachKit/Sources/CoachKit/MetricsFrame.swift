@@ -12,6 +12,8 @@ public enum WorkoutState: String, Codable, Sendable {
 /// Optional fields mean "not measured this time", never zero.
 public struct MetricsFrame: Codable, Equatable, Sendable {
     public static let protocolVersion = 1
+    /// LiveKit data channel topic (docs/spec.md 6.4).
+    public static let topic = "coach.metrics"
 
     public var v: Int
     public var seq: Int

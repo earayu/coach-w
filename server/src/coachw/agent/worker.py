@@ -1,4 +1,4 @@
-"""LiveKit agent worker: one coach session per room (spec 7.2).
+"""LiveKit agent worker: one coach session per room (spec 7.2, 4).
 
 Run: `python -m coachw.agent dev` (local) or `python -m coachw.agent start` (production).
 LiveKit Agents reads LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET from the environment.
@@ -15,8 +15,10 @@ from livekit import rtc
 from livekit.agents import AgentServer, AgentSession, JobContext, cli
 
 from coachw.agent.coach import GREETING, SESSION_CAP_FAREWELL, CoachAgent
-from coachw.agent.metrics import LatestMetrics
-from coachw.protocol import METRICS_TOPIC, MetricsFrame, ProtocolError
+from coachw.agent.loop import CoachLoop
+from coachw.coach.brain import CoachBrain
+from coachw.profiles.base import Athlete
+from coachw.protocol import CUE_TOPIC, METRICS_TOPIC, CoachCue, MetricsFrame, ProtocolError
 from coachw.providers import get_realtime_model
 from coachw.session import AGENT_NAME, SessionMeta
 
@@ -42,14 +44,14 @@ def read_session_meta(participant: rtc.RemoteParticipant) -> SessionMeta:
         return SessionMeta(athlete_id="unknown", max_session_s=fallback)
 
 
-def make_metrics_listener(store: LatestMetrics, athlete_identity: str):
+def make_metrics_listener(brain: CoachBrain, athlete_identity: str):
     def on_data(packet: rtc.DataPacket) -> None:
         if packet.topic != METRICS_TOPIC:
             return
         if packet.participant is None or packet.participant.identity != athlete_identity:
             return
         try:
-            store.update(MetricsFrame.from_json(packet.data))
+            brain.on_frame(MetricsFrame.from_json(packet.data))
         except (ProtocolError, ValueError, TypeError) as e:
             # never log the payload: it is health data
             logger.warning("dropped bad metrics frame: %s", type(e).__name__)
@@ -76,21 +78,33 @@ async def entrypoint(ctx: JobContext) -> None:
     meta = read_session_meta(participant)
     ctx.log_context_fields = {"athlete_id": meta.athlete_id, "room": ctx.room.name}
 
-    store = LatestMetrics()
-    ctx.room.on("data_received", make_metrics_listener(store, participant.identity))
+    # all coaching state is per session and per athlete (spec 3.1)
+    brain = CoachBrain(Athlete(athlete_id=meta.athlete_id))
+    ctx.room.on("data_received", make_metrics_listener(brain, participant.identity))
 
     session = AgentSession(llm=get_realtime_model(os.environ.get("COACHW_PROVIDER", "qwen")))
+    agent = CoachAgent(brain)
 
-    await session.start(room=ctx.room, agent=CoachAgent(store))
+    async def publish_cue(cue: CoachCue) -> None:
+        await ctx.room.local_participant.publish_data(
+            cue.to_json(),
+            reliable=True,
+            destination_identities=[participant.identity],
+            topic=CUE_TOPIC,
+        )
+
+    await session.start(room=ctx.room, agent=agent)
     cap = asyncio.create_task(end_when_cap_reached(ctx, session, meta.max_session_s))
-    ctx.add_shutdown_callback(lambda: _cancel(cap))
+    coach = asyncio.create_task(CoachLoop(brain, agent, session, publish_cue).run())
+    ctx.add_shutdown_callback(lambda: _cancel(cap, coach))
     logger.info("coach session started, cap %ds", meta.max_session_s)
 
     session.generate_reply(instructions=GREETING)
 
 
-async def _cancel(task: asyncio.Task) -> None:
-    task.cancel()
+async def _cancel(*tasks: asyncio.Task) -> None:
+    for task in tasks:
+        task.cancel()
 
 
 def main() -> None:

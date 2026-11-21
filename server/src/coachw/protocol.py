@@ -1,6 +1,7 @@
 """Wire protocol v1 (docs/spec.md 6.3).
 
-Optional metrics are None when the watch did not measure them, never zero.
+Optional metrics are None when the watch did not measure them, never zero. Fixture files are
+named after the message: `metrics_frame_*` and `coach_cue_*`.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from typing import Any
 
 PROTOCOL_VERSION = 1
 METRICS_TOPIC = "coach.metrics"
+CUE_TOPIC = "coach.cue"
 
 
 class ProtocolError(ValueError):
@@ -69,3 +71,88 @@ class MetricsFrame:
 
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
+
+
+class CuePriority(StrEnum):
+    """Highest first (spec 4.5)."""
+
+    EMERGENCY = "emergency"
+    CORRECTION = "correction"
+    MILESTONE = "milestone"
+    COMPANION = "companion"
+
+    @property
+    def rank(self) -> int:
+        return _PRIORITY_RANK[self]
+
+
+_PRIORITY_RANK = {p: i for i, p in enumerate(reversed(CuePriority))}
+
+
+class Haptic(StrEnum):
+    """Watch haptic for a cue; mirrors `WKHapticType`."""
+
+    NOTIFICATION = "notification"
+    DIRECTION_UP = "direction_up"
+    DIRECTION_DOWN = "direction_down"
+    SUCCESS = "success"
+    FAILURE = "failure"
+    RETRY = "retry"
+    START = "start"
+    STOP = "stop"
+    CLICK = "click"
+
+
+@dataclass(frozen=True, slots=True)
+class CoachCue:
+    """`coach.cue`: server → iPhone → watch. A cue the watch should buzz and show briefly.
+
+    `ts` and `expires_at` are server Unix milliseconds; receivers drop cues past `expires_at`.
+    The text is short display copy, never a metric value the watch could show itself.
+    """
+
+    v: int
+    id: str
+    ts: int
+    expires_at: int
+    priority: CuePriority
+    kind: str | None = None
+    haptic: Haptic | None = None
+    text: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CoachCue:
+        if not isinstance(data, dict):
+            raise ProtocolError("cue must be a JSON object")
+        if data.get("v") != PROTOCOL_VERSION:
+            raise ProtocolError(f"unsupported protocol version {data.get('v')!r}")
+        missing = [k for k in ("id", "ts", "expires_at", "priority") if k not in data]
+        if missing:
+            raise ProtocolError(f"missing required fields: {missing}")
+        known = {f.name for f in fields(cls)}
+        values = {k: v for k, v in data.items() if k in known}
+        try:
+            values["priority"] = CuePriority(values["priority"])
+        except ValueError as e:
+            raise ProtocolError(f"unknown cue priority {values['priority']!r}") from e
+        if (haptic := values.get("haptic")) is not None:
+            # a haptic this build does not know falls back to the generic one
+            values["haptic"] = Haptic(haptic) if haptic in Haptic else Haptic.NOTIFICATION
+        return cls(**values)
+
+    @classmethod
+    def from_json(cls, raw: str | bytes) -> CoachCue:
+        return cls.from_dict(json.loads(raw))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            k: str(v) if isinstance(v, StrEnum) else v
+            for k, v in asdict(self).items()
+            if v is not None
+        }
+
+    def to_json(self) -> bytes:
+        return json.dumps(self.to_dict(), ensure_ascii=False, separators=(",", ":")).encode()
+
+    def is_expired(self, now_ms: int) -> bool:
+        return now_ms >= self.expires_at

@@ -68,5 +68,46 @@ private struct ActiveWorkoutView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .navigationTitle(workout.activity?.title ?? "")
+        .overlay(alignment: .top) {
+            if let cue = workout.cue {
+                CueBanner(cue: cue)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: workout.cue?.id)
+    }
+}
+
+/// Short coach cue shown over the workout for a few seconds.
+private struct CueBanner: View {
+    let cue: CoachCue
+
+    var body: some View {
+        Label(cue.text ?? "教练提醒", systemImage: symbol)
+            .font(.headline)
+            .lineLimit(2)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .background(color.opacity(0.9), in: RoundedRectangle(cornerRadius: 12))
+            .foregroundStyle(.black)
+    }
+
+    private var symbol: String {
+        switch cue.priority {
+        case .emergency: "exclamationmark.triangle.fill"
+        case .correction: "arrow.up.arrow.down"
+        case .milestone: "flag.fill"
+        case .companion: "bubble.left.fill"
+        }
+    }
+
+    private var color: Color {
+        switch cue.priority {
+        case .emergency: .red
+        case .correction: .orange
+        case .milestone: .green
+        case .companion: .gray
+        }
     }
 }

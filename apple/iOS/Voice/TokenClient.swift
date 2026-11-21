@@ -1,3 +1,4 @@
+import CoachKit
 import Foundation
 
 /// What the token API hands out for one coach session (server/src/coachw/api/app.py).
@@ -26,11 +27,14 @@ enum TokenError: LocalizedError {
 
 enum TokenClient {
     static func requestSession(baseURL: String, inviteCode: String, athleteID: String) async throws -> SessionGrant {
-        guard let base = URL(string: baseURL), base.host != nil else { throw TokenError.invalidBaseURL }
+        // http / https only: anything else would send the invite code somewhere unexpected
+        guard let base = ServerAddress.parse(baseURL) else { throw TokenError.invalidBaseURL }
         var request = URLRequest(url: base.appending(path: "v1/session"), timeoutInterval: 15)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(["invite_code": inviteCode, "athlete_id": athleteID])
+        request.httpBody = try JSONEncoder().encode([
+            "invite_code": inviteCode.trimmedForSettings, "athlete_id": athleteID,
+        ])
 
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0

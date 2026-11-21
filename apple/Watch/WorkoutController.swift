@@ -1,6 +1,7 @@
 import CoachKit
 import HealthKit
 import Observation
+import WatchKit
 import os
 
 private let log = Logger(subsystem: "com.earayu.coachw.watch", category: "workout")
@@ -17,6 +18,8 @@ final class WorkoutController: NSObject {
     private(set) var activity: WorkoutActivity?
     private(set) var latest: MetricsFrame?
     private(set) var lastError: String?
+    /// The coach cue on screen, if any (spec 4.1: key cues also buzz the watch).
+    private(set) var cue: CoachCue?
 
     @ObservationIgnored private var session: HKWorkoutSession?
     @ObservationIgnored private var builder: HKLiveWorkoutBuilder?
@@ -24,6 +27,10 @@ final class WorkoutController: NSObject {
     /// Sends a frame every second while running, so elapsed time stays fresh and a missing
     /// stream means a broken link rather than "no new samples".
     @ObservationIgnored private var heartbeat: Task<Void, Never>?
+    @ObservationIgnored private var cueDismissal: Task<Void, Never>?
+
+    /// A cue stays on screen at most this long, and never past its expiry.
+    static let cueDisplaySeconds: TimeInterval = 4
 
     func requestAuthorization() async {
         do {
@@ -71,6 +78,24 @@ final class WorkoutController: NSObject {
     func resume() { session?.resume() }
     func end() { session?.stopActivity(with: .now) }
 
+    /// Buzzes and shows a cue from the coach. Expired cues are dropped: a late buzz misleads.
+    func present(_ cue: CoachCue) {
+        let now = Date()
+        guard state.isActive, !cue.isExpired(at: now) else {
+            log.info("dropping cue \(cue.id, privacy: .public): expired or no workout")
+            return
+        }
+        if let haptic = cue.haptic { WKInterfaceDevice.current().play(haptic.watchKit) }
+        self.cue = cue
+        cueDismissal?.cancel()
+        let shown = min(Self.cueDisplaySeconds, cue.remaining(at: now))
+        cueDismissal = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(shown))
+            guard !Task.isCancelled, self?.cue?.id == cue.id else { return }
+            self?.cue = nil
+        }
+    }
+
     private func updateHeartbeat() {
         heartbeat?.cancel()
         heartbeat = nil
@@ -92,6 +117,8 @@ final class WorkoutController: NSObject {
         frames = nil
         activity = nil
         latest = nil
+        cueDismissal?.cancel()
+        cue = nil
         state = .notStarted
     }
 
@@ -159,7 +186,10 @@ extension WorkoutController: HKWorkoutSessionDelegate {
     nonisolated func workoutSession(
         _ workoutSession: HKWorkoutSession, didReceiveDataFromRemoteWorkoutSession data: [Data]
     ) {
-        // Coach cues from the iPhone arrive here from M3 on.
+        // The iPhone sends only coach cues on this channel (spec 6.3).
+        let cues = data.compactMap { try? CoachCue.decode($0) }
+        if cues.count < data.count { log.error("dropping \(data.count - cues.count) undecodable cue(s)") }
+        Task { @MainActor in cues.forEach(self.present) }
     }
 }
 
@@ -179,4 +209,20 @@ extension WorkoutController: HKLiveWorkoutBuilderDelegate {
     }
 
     nonisolated func workoutBuilderDidCollectEvent(_ workoutBuilder: HKLiveWorkoutBuilder) {}
+}
+
+extension CueHaptic {
+    var watchKit: WKHapticType {
+        switch self {
+        case .notification: .notification
+        case .directionUp: .directionUp
+        case .directionDown: .directionDown
+        case .success: .success
+        case .failure: .failure
+        case .retry: .retry
+        case .start: .start
+        case .stop: .stop
+        case .click: .click
+        }
+    }
 }

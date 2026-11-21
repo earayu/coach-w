@@ -51,6 +51,22 @@ final class MirrorReceiver: NSObject {
         }
     }
 
+    /// Forwards a coach cue to the watch over the mirrored session; expired cues are dropped.
+    func sendToWatch(_ cue: CoachCue) {
+        guard let session else { return }
+        guard !cue.isExpired(at: .now), let data = try? cue.encoded() else {
+            log.info("not forwarding cue \(cue.id, privacy: .public): expired or unencodable")
+            return
+        }
+        Task {
+            do {
+                try await session.sendToRemoteWorkoutSession(data: data)
+            } catch {
+                log.error("forwarding cue to watch failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     func pause() { session?.pause() }
     func resume() { session?.resume() }
     func end() { session?.stopActivity(with: .now) }

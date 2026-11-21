@@ -33,7 +33,7 @@ private func fixture(_ name: String) throws -> Data {
 
 @Test func everyFixtureRoundTrips() throws {
     let names = try FileManager.default.contentsOfDirectory(atPath: fixtures.path)
-        .filter { $0.hasSuffix(".json") }
+        .filter { $0.hasPrefix("metrics_frame_") && $0.hasSuffix(".json") }
     #expect(!names.isEmpty)
     for name in names {
         let frame = try MetricsFrame.decode(fixture(name))

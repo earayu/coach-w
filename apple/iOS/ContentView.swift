@@ -26,7 +26,7 @@ struct ContentView: View {
             .toolbar {
                 Button("设置", systemImage: "gearshape") { showSettings = true }
             }
-            .sheet(isPresented: $showSettings) { SettingsView(settings: settings) }
+            .sheet(isPresented: $showSettings, onDismiss: { settings.normalize() }) { SettingsView(settings: settings) }
         }
         .task {
             if settings.autoConnect, settings.isConfigured { await voice.start(settings: settings) }
@@ -62,6 +62,7 @@ private struct VoiceSection: View {
             LabeledContent("教练", value: voice.status.title)
             if voice.status == .connected {
                 Row("已发送指标", "\(voice.framesSent) 帧")
+                Row("手表提醒", "\(voice.cuesReceived) 条")
             }
             HStack {
                 if voice.isActive {
@@ -69,6 +70,7 @@ private struct VoiceSection: View {
                            systemImage: voice.isMuted ? "mic.slash.fill" : "mic.fill") {
                         Task { await voice.toggleMute() }
                     }
+                    .disabled(voice.status != .connected)
                     Spacer()
                     Button("结束语音", systemImage: "phone.down.fill", role: .destructive) {
                         Task { await voice.stop() }
