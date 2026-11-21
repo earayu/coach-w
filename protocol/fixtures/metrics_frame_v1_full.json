@@ -1,0 +1,21 @@
+{
+  "v": 1,
+  "seq": 128,
+  "ts": 1763726400123,
+  "phone_ts": 1763726400180,
+  "activity": "running",
+  "state": "running",
+  "elapsed_s": 642.5,
+  "hr_bpm": 152,
+  "distance_m": 2034.1,
+  "speed_mps": 3.21,
+  "cadence_spm": 172,
+  "power_w": 245,
+  "stride_m": 1.12,
+  "gct_ms": 248,
+  "vo_cm": 8.4,
+  "energy_kcal": 168.2,
+  "lat": 39.9042,
+  "lon": 116.4074,
+  "alt_m": 45.2
+}

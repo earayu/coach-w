@@ -1,0 +1,26 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Swift / Xcode
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcodeproj/
+*.xcworkspace/
+
+# local runs
+logs/
+artifacts/
