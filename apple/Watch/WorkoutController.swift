@@ -22,6 +22,9 @@ final class WorkoutController: NSObject {
     /// The coach cue on screen, if any (spec 4.1: key cues also buzz the watch).
     private(set) var cue: CoachCue?
 
+    var isRunning: Bool { state == .running }
+    var isPaused: Bool { state == .paused }
+
     @ObservationIgnored private var session: HKWorkoutSession?
     @ObservationIgnored private var builder: HKLiveWorkoutBuilder?
     @ObservationIgnored private var frames: FrameBuilder?

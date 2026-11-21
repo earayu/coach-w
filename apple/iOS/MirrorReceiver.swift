@@ -27,6 +27,8 @@ final class MirrorReceiver: NSObject {
     @ObservationIgnored var onSessionEnded: (@MainActor () -> Void)?
 
     var isActive: Bool { state != .notStarted && state != .ended }
+    var isRunning: Bool { state == .running }
+    var isPaused: Bool { state == .paused }
 
     /// Must run at launch: HealthKit may launch the app in the background to hand over a session.
     func install() {

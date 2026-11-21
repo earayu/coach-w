@@ -431,7 +431,7 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 - 连接竞态：`start()` 每次带一个代数，`stop()` 让代数加一；拿 token、连房间、开麦这几步之间发现代数变了就放弃并断开刚连上的房间，所以"连接中"点结束语音后不会再连上开麦。`RoomDelegate` 回调只处理当前房间的事件。
 - 设置：邀请码和服务器地址在判断"已配置"、发请求、持久化时都去掉首尾空白和换行，设置页关闭时内存里的值也一并裁剪；服务器地址只接受 `http` / `https`（`CoachKit.ServerAddress`）。"静音"按钮只在已连接时可用。
 - 开发构建（DEBUG）可在启动时用环境变量配置：`COACHW_API_BASE_URL`、`COACHW_INVITE_CODE`（写入设置并保存），`COACHW_AUTOCONNECT=1` 启动后自动连接，方便用 `xcrun devicectl device process launch --environment-variables` 免手输测试。正式构建不读这些变量。
-- 界面：首页顶部"语音教练"一节，显示连接状态、已发送指标帧数，按钮为连接教练 / 静音 / 结束语音；右上角"设置"填邀请码和服务器地址；左上角"运动记录"（M4）。
+- 界面（Pulse W 暗黑运动主题，`apple/Shared/DesignSystem.swift`）：未运动态为开跑大厅（`LobbyView`），包含 Pulse W 脉冲徽标、在线状态胶囊、横向运动卡片选择器、"在手表上开始"主操作、实时语音教练卡片与"刚刚完成"快捷入口；运动中切至全屏运动仪表盘（`WorkoutDashboardView`），含顶部动态声波语音条、超大号配速/时速与时长距离英雄卡、心率区间条、2 列次级指标网格、默认折叠的数据流健康抽屉与防误触底部控制栏；右上角"设置"（`SettingsView`）填服务器地址与邀请码，左上角"记录"（`RecordsView`）查看历史汇总、每公里分段柱状图与教练对话时间线。watchOS（`apple/Watch/ContentView.swift`）同步采用健身级全宽运动卡片与户外高对比度表盘（含 `coach.cue` 顶部横幅）。DEBUG 构建支持 `COACHW_UI_PREVIEW` 环境变量在模拟器预览各页面，正式构建不生效。
 - 教练说过的话（M4）：livekit-agents 把双方的转写以文字流发到 `lk.transcription`；`VoiceSession` 注册这个 topic，发送者不是自己（用户自己的话以用户身份发出）的整段文字交给 `WorkoutRecorder` 记下。
 - LiveKit 的 WebRTC 二进制包约 690 MB，从 GitHub Releases 下载，国内网络下 xcodebuild 自带的下载会超时。可先用 `curl -C -` 断点续传，再按 SwiftPM 的命名放进 `~/Library/Caches/org.swift.swiftpm/artifacts/`（见 `docs/setup.md`）。
 

@@ -7,209 +7,314 @@ struct ContentView: View {
     let recorder: WorkoutRecorder
     let store: WorkoutStore
     @Bindable var settings: AppSettings
+
     @State private var activity: WorkoutActivity = .running
     @State private var showSettings = false
 
+    #if DEBUG
+    private var uiPreview: UIPreviewScene? {
+        ProcessInfo.processInfo.environment["COACHW_UI_PREVIEW"].flatMap(UIPreviewScene.init(rawValue:))
+    }
+    #endif
+
     var body: some View {
         NavigationStack {
-            List {
-                VoiceSection(voice: voice, settings: settings, showSettings: $showSettings)
-                if mirror.isActive {
-                    LiveSection(mirror: mirror)
-                    StreamSection(stats: mirror.stats)
+            ZStack {
+                PulseBackground(auraOpacity: isWorkoutActive ? 0.12 : 0.18)
+
+                #if DEBUG
+                if let preview = uiPreview {
+                    previewBody(preview)
                 } else {
-                    if let record = recorder.lastRecord {
-                        Section("刚刚完成") {
-                            NavigationLink { RecordDetailView(record: record) } label: { RecordRow(record: record) }
+                    liveBody
+                }
+                #else
+                liveBody
+                #endif
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                if showRootToolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        NavigationLink {
+                            RecordsView(store: store)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("记录")
+                                    .font(.subheadline.weight(.semibold))
+                                if !store.records.isEmpty {
+                                    Text("\(store.records.count)")
+                                        .font(.caption2.weight(.bold).monospacedDigit())
+                                        .foregroundStyle(PulseTheme.obsidianMid)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(PulseTheme.volt, in: Capsule())
+                                }
+                            }
+                            .foregroundStyle(PulseTheme.textPrimary)
                         }
                     }
-                    startSection
-                }
-                if let error = mirror.lastError {
-                    Section { Text(error).foregroundStyle(.red) }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showSettings = true
+                        } label: {
+                            ZStack(alignment: .topTrailing) {
+                                Image(systemName: "gearshape.fill")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(PulseTheme.textPrimary)
+                                if showConfigDot {
+                                    Circle()
+                                        .fill(PulseTheme.amber)
+                                        .frame(width: 7, height: 7)
+                                        .offset(x: 3, y: -2)
+                                }
+                            }
+                        }
+                        .accessibilityLabel("设置")
+                    }
                 }
             }
-            .navigationTitle(mirror.activity?.title ?? "coach-w")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    NavigationLink { RecordsView(store: store) } label: { Label("运动记录", systemImage: "list.bullet.rectangle") }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("设置", systemImage: "gearshape") { showSettings = true }
-                }
+            .sheet(isPresented: $showSettings, onDismiss: { settings.normalize() }) {
+                SettingsView(settings: settings)
             }
-            .sheet(isPresented: $showSettings, onDismiss: { settings.normalize() }) { SettingsView(settings: settings) }
         }
+        .tint(PulseTheme.volt)
+        .preferredColorScheme(.dark)
         .task {
+            #if DEBUG
+            if let preview = uiPreview {
+                if preview == .settings { showSettings = true }
+                return
+            }
+            #endif
             if settings.autoConnect, settings.isConfigured { await voice.start(settings: settings) }
             await mirror.requestAuthorization()
         }
     }
 
-    private var startSection: some View {
-        Section {
-            Picker("运动", selection: $activity) {
-                ForEach(WorkoutActivity.allCases) { activity in
-                    Label(activity.title, systemImage: activity.symbol).tag(activity)
-                }
-            }
-            Button {
-                Task { await mirror.startOnWatch(activity) }
-            } label: {
-                Label("在手表上开始", systemImage: "applewatch")
-            }
-        } footer: {
-            Text("手表负责采集和保存运动，这里实时显示手表发来的指标。")
+    private var isWorkoutActive: Bool {
+        #if DEBUG
+        if uiPreview == .active { return true }
+        #endif
+        return mirror.isActive
+    }
+
+    private var showRootToolbar: Bool {
+        #if DEBUG
+        if uiPreview == .records || uiPreview == .recordDetail { return false }
+        #endif
+        return true
+    }
+
+    private var showConfigDot: Bool {
+        #if DEBUG
+        if uiPreview != nil { return false }
+        #endif
+        return !settings.isConfigured
+    }
+
+    @ViewBuilder
+    private var liveBody: some View {
+        if mirror.isActive {
+            WorkoutDashboardView(
+                activity: mirror.activity ?? .other,
+                frame: mirror.latest,
+                stats: mirror.stats,
+                isRunning: mirror.isRunning,
+                voice: VoiceVisualState(voice: voice),
+                isConfigured: settings.isConfigured,
+                lastError: mirror.lastError,
+                onPause: { mirror.pause() },
+                onResume: { mirror.resume() },
+                onEnd: { mirror.end() },
+                onConnectVoice: { Task { await voice.start(settings: settings) } },
+                onToggleMute: { Task { await voice.toggleMute() } },
+                onStopVoice: { Task { await voice.stop() } },
+                onOpenSettings: { showSettings = true }
+            )
+        } else {
+            LobbyView(
+                selectedActivity: $activity,
+                voice: VoiceVisualState(voice: voice),
+                isConfigured: settings.isConfigured,
+                lastRecord: recorder.lastRecord,
+                lastError: mirror.lastError,
+                onStartWatch: { Task { await mirror.startOnWatch(activity) } },
+                onConnectVoice: { Task { await voice.start(settings: settings) } },
+                onToggleMute: { Task { await voice.toggleMute() } },
+                onStopVoice: { Task { await voice.stop() } },
+                onOpenSettings: { showSettings = true }
+            )
         }
     }
-}
 
-private struct VoiceSection: View {
-    let voice: VoiceSession
-    let settings: AppSettings
-    @Binding var showSettings: Bool
-
-    var body: some View {
-        Section {
-            LabeledContent("教练", value: voice.status.title)
-            if voice.status == .connected {
-                Row("已发送指标", "\(voice.framesSent) 帧")
-                Row("手表提醒", "\(voice.cuesReceived) 条")
-            }
-            if voice.reconnects > 0 {
-                Row("自动重连", "\(voice.reconnects) 次")
-            }
-            HStack {
-                if voice.isActive {
-                    Button(voice.isMuted ? "取消静音" : "静音",
-                           systemImage: voice.isMuted ? "mic.slash.fill" : "mic.fill") {
-                        Task { await voice.toggleMute() }
-                    }
-                    .disabled(voice.status != .connected)
-                    Spacer()
-                    Button("结束语音", systemImage: "phone.down.fill", role: .destructive) {
-                        Task { await voice.stop() }
-                    }
-                } else if settings.isConfigured {
-                    Button("连接教练", systemImage: "waveform") {
-                        Task { await voice.start(settings: settings) }
-                    }
-                } else {
-                    Button("先填写邀请码和服务器", systemImage: "gearshape") { showSettings = true }
-                }
-            }
-            .buttonStyle(.bordered)
-        } header: {
-            Text("语音教练")
-        } footer: {
-            if voice.needsLocalFallback {
-                Text("教练暂时不在线：心率过高、整公里和结束由手机直接播报，手表照常震动。")
-            }
+    #if DEBUG
+    @ViewBuilder
+    private func previewBody(_ scene: UIPreviewScene) -> some View {
+        switch scene {
+        case .lobby, .settings:
+            LobbyView(
+                selectedActivity: $activity,
+                voice: VoiceVisualState(
+                    mode: .listening,
+                    isActive: true,
+                    isConnected: true,
+                    isMuted: false,
+                    needsLocalFallback: false,
+                    framesSent: 0,
+                    cuesReceived: 0,
+                    reconnects: 0
+                ),
+                isConfigured: true,
+                lastRecord: UIPreviewFixtures.sampleRecords.first,
+                lastError: nil,
+                onStartWatch: {},
+                onConnectVoice: {},
+                onToggleMute: {},
+                onStopVoice: {},
+                onOpenSettings: { showSettings = true }
+            )
+        case .active:
+            WorkoutDashboardView(
+                activity: .running,
+                frame: UIPreviewFixtures.sampleFrame,
+                stats: UIPreviewFixtures.sampleStats,
+                isRunning: true,
+                voice: VoiceVisualState(
+                    mode: .speaking,
+                    isActive: true,
+                    isConnected: true,
+                    isMuted: false,
+                    needsLocalFallback: false,
+                    framesSent: 1718,
+                    cuesReceived: 5,
+                    reconnects: 0
+                ),
+                isConfigured: true,
+                lastError: nil,
+                onPause: {},
+                onResume: {},
+                onEnd: {},
+                onConnectVoice: {},
+                onToggleMute: {},
+                onStopVoice: {},
+                onOpenSettings: { showSettings = true }
+            )
+        case .records:
+            RecordsView(records: UIPreviewFixtures.sampleRecords)
+        case .recordDetail:
+            RecordDetailView(record: UIPreviewFixtures.sampleRecords[0])
         }
     }
+    #endif
 }
 
-private struct SettingsView: View {
-    @Bindable var settings: AppSettings
-    @Environment(\.dismiss) private var dismiss
+#if DEBUG
+private enum UIPreviewScene: String {
+    case lobby
+    case active
+    case records
+    case recordDetail = "record_detail"
+    case settings
+}
 
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("邀请码", text: $settings.inviteCode)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                } footer: {
-                    Text("邀请码保存在钥匙串里。")
-                }
-                Section {
-                    TextField("http://192.168.1.10:8000", text: $settings.apiBaseURL)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                } header: {
-                    Text("服务器地址")
-                } footer: {
-                    Text("开发时填 Mac 的局域网地址，正式服务器填 https 域名。")
-                }
-                Section("运动者 ID") {
-                    Text(settings.athleteID).font(.footnote.monospaced()).textSelection(.enabled)
-                }
-            }
-            .navigationTitle("设置")
-            .toolbar { Button("完成") { dismiss() } }
+/// Synthetic fixtures used solely when launching Simulator with `COACHW_UI_PREVIEW` in DEBUG builds.
+private enum UIPreviewFixtures {
+    static let sampleFrame = MetricsFrame(
+        seq: 1718,
+        ts: 1_760_000_000_000,
+        activity: "running",
+        state: .running,
+        elapsedS: 1718,
+        phoneTs: 1_760_000_000_068,
+        hrBpm: 158,
+        distanceM: 5240,
+        speedMps: 3.185,
+        cadenceSpm: 176,
+        powerW: 268,
+        strideM: 1.09,
+        gctMs: 228,
+        voCm: 8.4,
+        energyKcal: 362,
+        lat: 31.2304,
+        lon: 121.4737,
+        altM: 42
+    )
+
+    static var sampleStats: FrameStats {
+        var stats = FrameStats()
+        for i in 1...12 {
+            let ts: Int64 = 1_760_000_000_000 + Int64(i) * 1000
+            stats.record(
+                MetricsFrame(
+                    seq: i,
+                    ts: ts,
+                    activity: "running",
+                    state: .running,
+                    elapsedS: Double(i),
+                    phoneTs: ts + 68
+                )
+            )
         }
+        return stats
     }
+
+    static let sampleRecords: [WorkoutRecord] = [
+        WorkoutRecord(
+            activity: "running",
+            startedAt: Date().addingTimeInterval(-3600),
+            endedAt: Date().addingTimeInterval(-1882),
+            durationS: 1718,
+            distanceM: 5240,
+            energyKcal: 362,
+            avgHrBpm: 154,
+            maxHrBpm: 169,
+            avgSpeedMps: 3.05,
+            avgCadenceSpm: 176,
+            avgPowerW: 264,
+            kmSplitsS: [338, 326, 321, 314, 319],
+            lines: [
+                CoachLine(at: Date().addingTimeInterval(-3540), text: "出发啦！前五分钟先轻松热身，把步频慢慢带起来。", source: .coach),
+                CoachLine(at: Date().addingTimeInterval(-2600), text: "第 3 公里用时 5 分 21 秒，心率稳在有氧区，节奏非常顺。", source: .coach),
+                CoachLine(at: Date().addingTimeInterval(-2280), text: "第 4 公里 5 分 14 秒，是今天最快的一公里，注意保持放松摆臂。", source: .coach),
+                CoachLine(at: Date().addingTimeInterval(-1880), text: "辛苦了！今天共跑 5.24 公里，用时 28 分 38 秒，平均心率 154，第 4 公里最快。", source: .coach),
+            ]
+        ),
+        WorkoutRecord(
+            activity: "cycling",
+            startedAt: Date().addingTimeInterval(-90_000),
+            endedAt: Date().addingTimeInterval(-86_400),
+            durationS: 3600,
+            distanceM: 24_800,
+            energyKcal: 610,
+            avgHrBpm: 141,
+            maxHrBpm: 162,
+            avgSpeedMps: 6.89,
+            avgCadenceSpm: 84,
+            avgPowerW: 185,
+            kmSplitsS: [],
+            lines: [
+                CoachLine(at: Date().addingTimeInterval(-88_200), text: "已骑行 15 公里，当前均速每小时 24.8 公里，前方路口注意控速。", source: .coach),
+            ]
+        ),
+        WorkoutRecord(
+            activity: "walking",
+            startedAt: Date().addingTimeInterval(-176_000),
+            endedAt: Date().addingTimeInterval(-173_900),
+            durationS: 2100,
+            distanceM: 3120,
+            energyKcal: 168,
+            avgHrBpm: 108,
+            maxHrBpm: 119,
+            avgSpeedMps: 1.49,
+            kmSplitsS: [680, 672, 665],
+            lines: [
+                CoachLine(at: Date().addingTimeInterval(-174_500), text: "已经走了 2 公里，顺口提醒一下记得补充几口水。", source: .local),
+            ]
+        ),
+    ]
 }
-
-private struct LiveSection: View {
-    let mirror: MirrorReceiver
-
-    var body: some View {
-        let frame = mirror.latest
-        let activity = mirror.activity ?? .other
-        Section {
-            Row("时长", Format.duration(frame?.elapsedS))
-            Row("心率", Format.value(frame?.hrBpm, unit: "bpm"))
-            Row("距离", Format.distance(frame?.distanceM))
-            if activity.readsSpeedAsPace {
-                Row("配速", Format.pace(frame?.speedMps))
-            } else {
-                Row("速度", Format.speed(frame?.speedMps))
-            }
-            Row(activity.readsSpeedAsPace ? "步频" : "踏频", Format.value(frame?.cadenceSpm, unit: activity.cadenceUnit))
-            Row("功率", Format.value(frame?.powerW, unit: "W"))
-            Row("步幅", Format.value(frame?.strideM, unit: "m", digits: 2))
-            Row("触地时间", Format.value(frame?.gctMs, unit: "ms"))
-            Row("垂直振幅", Format.value(frame?.voCm, unit: "cm", digits: 1))
-            Row("能量", Format.value(frame?.energyKcal, unit: "kcal"))
-            Row("海拔", Format.value(frame?.altM, unit: "m"))
-            Row("GPS", frame?.lat == nil ? "未定位" : "已定位")
-        } header: {
-            Text(frame?.state == .paused ? "已暂停" : "进行中")
-        } footer: {
-            HStack {
-                if mirror.state == .running {
-                    Button("暂停", systemImage: "pause.fill") { mirror.pause() }
-                } else {
-                    Button("继续", systemImage: "play.fill") { mirror.resume() }
-                }
-                Spacer()
-                Button("结束", systemImage: "stop.fill", role: .destructive) { mirror.end() }
-            }
-            .buttonStyle(.bordered)
-            .padding(.top, 8)
-        }
-    }
-}
-
-private struct StreamSection: View {
-    let stats: FrameStats
-
-    var body: some View {
-        Section("数据流") {
-            Row("已收到", "\(stats.received) 帧")
-            Row("丢失", "\(stats.missing) 帧")
-            Row("乱序", "\(stats.outOfOrder) 帧")
-            Row("平均间隔", stats.meanInterval.map { String(format: "%.2f s", $0) } ?? Format.dash)
-            Row("最近延迟", stats.lastDelayMs.map { "\($0) ms" } ?? Format.dash)
-        }
-    }
-}
-
-private struct Row: View {
-    let title: String
-    let value: String
-
-    init(_ title: String, _ value: String) {
-        self.title = title
-        self.value = value
-    }
-
-    var body: some View {
-        LabeledContent(title) {
-            Text(value).monospacedDigit()
-        }
-    }
-}
+#endif

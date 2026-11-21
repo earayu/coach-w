@@ -48,6 +48,7 @@ final class VoiceSession: NSObject {
 
     private(set) var status: Status = .idle
     private(set) var isMuted = false
+    private(set) var isCoachSpeaking = false
     private(set) var framesSent = 0
     private(set) var cuesReceived = 0
     private(set) var reconnects = 0
@@ -90,6 +91,7 @@ final class VoiceSession: NSObject {
         reconnects = 0
         retryAttempt = 0
         isMuted = false
+        isCoachSpeaking = false
         startPathMonitor()
         await connect()
     }
@@ -103,6 +105,7 @@ final class VoiceSession: NSObject {
         self.room = nil
         sendTail?.cancel()
         sendTail = nil
+        isCoachSpeaking = false
         status = .idle
         await room?.disconnect()
     }
@@ -202,6 +205,7 @@ final class VoiceSession: NSObject {
         retryTask?.cancel()
         retryTask = nil
         stopPathMonitor()
+        isCoachSpeaking = false
         status = .failed(message)
     }
 
@@ -210,6 +214,7 @@ final class VoiceSession: NSObject {
         room = nil
         sendTail?.cancel()
         sendTail = nil
+        isCoachSpeaking = false
         // the server closed the session on purpose (time cap, removed): do not start a new one
         if let type = error?.type, [.roomDeleted, .participantRemoved, .duplicateIdentity].contains(type) {
             giveUp("教练会话已结束")
@@ -329,6 +334,15 @@ extension VoiceSession: RoomDelegate {
         Task { @MainActor in
             guard self.isCurrent(id) else { return }
             await self.sendResume()
+        }
+    }
+
+    nonisolated func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
+        let id = ObjectIdentifier(room)
+        let speaking = participants.contains { $0.kind == .agent }
+        Task { @MainActor in
+            guard self.isCurrent(id) else { return }
+            self.isCoachSpeaking = speaking
         }
     }
 

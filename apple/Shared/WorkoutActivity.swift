@@ -36,6 +36,33 @@ enum WorkoutActivity: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// Concise display tagline shown on the iOS activity selector cards.
+    var subtitle: String {
+        switch self {
+        case .running: "配速 · 跑姿 · 语音陪跑"
+        case .walking: "轻松陪伴 · 每公里报时"
+        case .hiking: "户外海拔 · 坡度陪伴"
+        case .cycling: "时速播报 · 安全优先"
+        case .other: "心率 · 时长 · 能量"
+        }
+    }
+
+    /// Compact subtitle for Apple Watch workout cards.
+    var watchSubtitle: String {
+        switch self {
+        case .running: "配速 · 跑姿"
+        case .walking: "轻松陪伴"
+        case .hiking: "海拔 · 徒步"
+        case .cycling: "时速 · 骑行"
+        case .other: "心率 · 能量"
+        }
+    }
+
+    var speedTitle: String { readsSpeedAsPace ? "配速" : "速度" }
+    var averageSpeedTitle: String { readsSpeedAsPace ? "平均配速" : "平均速度" }
+    var speedUnit: String { readsSpeedAsPace ? "/km" : "km/h" }
+    var cadenceTitle: String { readsSpeedAsPace ? "步频" : "踏频" }
+
     var healthKitType: HKWorkoutActivityType {
         switch self {
         case .running: .running
