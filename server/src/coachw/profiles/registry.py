@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import replace
 
 from coachw.profiles.base import ActivityProfile
+from coachw.profiles.cycling import CYCLING
 from coachw.profiles.fallback import FALLBACK
 from coachw.profiles.running import RUNNING
+from coachw.profiles.walking import HIKING, WALKING
 
-PROFILES: tuple[ActivityProfile, ...] = (RUNNING,)
+PROFILES: tuple[ActivityProfile, ...] = (RUNNING, WALKING, HIKING, CYCLING)
 
 
 def _index(profiles: tuple[ActivityProfile, ...]) -> dict[str, ActivityProfile]:

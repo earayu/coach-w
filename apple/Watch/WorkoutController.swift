@@ -1,4 +1,5 @@
 import CoachKit
+import CoreLocation
 import HealthKit
 import Observation
 import WatchKit
@@ -28,6 +29,10 @@ final class WorkoutController: NSObject {
     /// stream means a broken link rather than "no new samples".
     @ObservationIgnored private var heartbeat: Task<Void, Never>?
     @ObservationIgnored private var cueDismissal: Task<Void, Never>?
+    /// GPS for outdoor activities: the route goes to HealthKit with the workout, the latest fix
+    /// into the frames (docs/spec.md 6.3, 11).
+    @ObservationIgnored private let locationFeed = LocationFeed()
+    @ObservationIgnored private var routeBuilder: HKWorkoutRouteBuilder?
 
     /// A cue stays on screen at most this long, and never past its expiry.
     static let cueDisplaySeconds: TimeInterval = 4
@@ -67,11 +72,36 @@ final class WorkoutController: NSObject {
             let startDate = Date()
             session.startActivity(with: startDate)
             try await builder.beginCollection(at: startDate)
+            if activity.usesGPS { startRoute(builder) }
         } catch {
             log.error("failed to start workout: \(error.localizedDescription)")
             lastError = "开始运动失败：\(error.localizedDescription)"
             reset()
         }
+    }
+
+    private func startRoute(_ builder: HKLiveWorkoutBuilder) {
+        // associated with the workout builder: finished and saved together with the workout
+        routeBuilder = builder.seriesBuilder(for: HKSeriesType.workoutRoute()) as? HKWorkoutRouteBuilder
+        locationFeed.start { [weak self] locations in self?.receive(locations) }
+    }
+
+    private func receive(_ locations: [CLLocation]) {
+        guard state.isActive, let last = locations.last else { return }
+        if let routeBuilder {
+            Task {
+                do {
+                    try await routeBuilder.insertRouteData(locations)
+                } catch {
+                    log.error("route insert failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+        let altitude = last.verticalAccuracy >= 0 ? last.altitude : nil
+        let reading = MetricReading.location(
+            latitude: last.coordinate.latitude, longitude: last.coordinate.longitude, altitudeMeters: altitude
+        )
+        ingest([reading], elapsed: builder?.elapsedTime ?? 0)
     }
 
     func pause() { session?.pause() }
@@ -110,6 +140,8 @@ final class WorkoutController: NSObject {
     }
 
     private func reset() {
+        locationFeed.stop()
+        routeBuilder = nil
         heartbeat?.cancel()
         heartbeat = nil
         session = nil
@@ -150,6 +182,7 @@ final class WorkoutController: NSObject {
         ingest([], elapsed: builder?.elapsedTime(at: date) ?? 0, force: true)
         switch newState {
         case .stopped:
+            locationFeed.stop()
             guard let builder, let session else { return }
             do {
                 try await builder.endCollection(at: date)

@@ -4,6 +4,8 @@ import SwiftUI
 struct ContentView: View {
     let mirror: MirrorReceiver
     let voice: VoiceSession
+    let recorder: WorkoutRecorder
+    let store: WorkoutStore
     @Bindable var settings: AppSettings
     @State private var activity: WorkoutActivity = .running
     @State private var showSettings = false
@@ -16,6 +18,11 @@ struct ContentView: View {
                     LiveSection(mirror: mirror)
                     StreamSection(stats: mirror.stats)
                 } else {
+                    if let record = recorder.lastRecord {
+                        Section("刚刚完成") {
+                            NavigationLink { RecordDetailView(record: record) } label: { RecordRow(record: record) }
+                        }
+                    }
                     startSection
                 }
                 if let error = mirror.lastError {
@@ -24,7 +31,12 @@ struct ContentView: View {
             }
             .navigationTitle(mirror.activity?.title ?? "coach-w")
             .toolbar {
-                Button("设置", systemImage: "gearshape") { showSettings = true }
+                ToolbarItem(placement: .topBarLeading) {
+                    NavigationLink { RecordsView(store: store) } label: { Label("运动记录", systemImage: "list.bullet.rectangle") }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("设置", systemImage: "gearshape") { showSettings = true }
+                }
             }
             .sheet(isPresented: $showSettings, onDismiss: { settings.normalize() }) { SettingsView(settings: settings) }
         }
@@ -64,6 +76,9 @@ private struct VoiceSection: View {
                 Row("已发送指标", "\(voice.framesSent) 帧")
                 Row("手表提醒", "\(voice.cuesReceived) 条")
             }
+            if voice.reconnects > 0 {
+                Row("自动重连", "\(voice.reconnects) 次")
+            }
             HStack {
                 if voice.isActive {
                     Button(voice.isMuted ? "取消静音" : "静音",
@@ -86,6 +101,10 @@ private struct VoiceSection: View {
             .buttonStyle(.bordered)
         } header: {
             Text("语音教练")
+        } footer: {
+            if voice.needsLocalFallback {
+                Text("教练暂时不在线：心率过高、整公里和结束由手机直接播报，手表照常震动。")
+            }
         }
     }
 }
@@ -129,17 +148,24 @@ private struct LiveSection: View {
 
     var body: some View {
         let frame = mirror.latest
+        let activity = mirror.activity ?? .other
         Section {
             Row("时长", Format.duration(frame?.elapsedS))
             Row("心率", Format.value(frame?.hrBpm, unit: "bpm"))
             Row("距离", Format.distance(frame?.distanceM))
-            Row("配速", Format.pace(frame?.speedMps))
-            Row("步频", Format.value(frame?.cadenceSpm, unit: "spm"))
+            if activity.readsSpeedAsPace {
+                Row("配速", Format.pace(frame?.speedMps))
+            } else {
+                Row("速度", Format.speed(frame?.speedMps))
+            }
+            Row(activity.readsSpeedAsPace ? "步频" : "踏频", Format.value(frame?.cadenceSpm, unit: activity.cadenceUnit))
             Row("功率", Format.value(frame?.powerW, unit: "W"))
             Row("步幅", Format.value(frame?.strideM, unit: "m", digits: 2))
             Row("触地时间", Format.value(frame?.gctMs, unit: "ms"))
             Row("垂直振幅", Format.value(frame?.voCm, unit: "cm", digits: 1))
             Row("能量", Format.value(frame?.energyKcal, unit: "kcal"))
+            Row("海拔", Format.value(frame?.altM, unit: "m"))
+            Row("GPS", frame?.lat == nil ? "未定位" : "已定位")
         } header: {
             Text(frame?.state == .paused ? "已暂停" : "进行中")
         } footer: {

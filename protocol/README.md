@@ -1,7 +1,8 @@
 # Wire protocol fixtures
 
 Canonical samples of the wire protocol defined in `docs/spec.md` section 6.3,
-named after the message: `metrics_frame_*` (`coach.metrics`) and `coach_cue_*` (`coach.cue`).
+named after the message: `metrics_frame_*` (`coach.metrics`), `coach_cue_*` (`coach.cue`)
+and `coach_resume_*` (`coach.resume`).
 Both `apple/CoachKit` and `server` parse every file here in their tests, so the
 two sides cannot drift apart.
 

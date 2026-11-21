@@ -1,3 +1,4 @@
+import CoachKit
 import HealthKit
 
 /// Activities offered in the UI, and how each maps to HealthKit and the wire protocol.
@@ -53,6 +54,30 @@ enum WorkoutActivity: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// Whether speed reads as pace per km (on foot) or km/h (on wheels), as in the server profiles.
+    var readsSpeedAsPace: Bool { self != .cycling }
+
+    /// Cadence unit for display: steps on foot, crank revolutions on a bike.
+    var cadenceUnit: String { readsSpeedAsPace ? "spm" : "rpm" }
+
+    /// Whether the watch records a GPS route for this activity (docs/spec.md 6.3, 11).
+    var usesGPS: Bool { self != .other }
+
+    /// How the phone's offline announcements pace themselves (docs/spec.md 7.4). Mirrors the
+    /// server profiles' split lengths; coaching itself stays on the server.
+    var offlineCoach: LocalCoach.Config {
+        switch self {
+        case .running, .walking, .hiking: LocalCoach.Config(splitKm: 1)
+        case .cycling: LocalCoach.Config(splitKm: 5)
+        case .other: LocalCoach.Config(splitKm: nil, timeMarkS: 600)
+        }
+    }
+
+    /// Activity of a record or frame; unknown names show as "other".
+    init(wireName: String) {
+        self = Self(rawValue: wireName) ?? .other
+    }
+
     init(healthKitType: HKWorkoutActivityType) {
         self = Self.allCases.first { $0.healthKitType == healthKitType } ?? .other
     }
@@ -66,7 +91,7 @@ enum WorkoutActivity: String, CaseIterable, Identifiable, Sendable {
 }
 
 enum HealthTypes {
-    static let share: Set<HKSampleType> = [HKQuantityType.workoutType()]
+    static let share: Set<HKSampleType> = [HKQuantityType.workoutType(), HKSeriesType.workoutRoute()]
 
     static let read: Set<HKObjectType> = [
         HKQuantityType(.heartRate),
@@ -83,5 +108,6 @@ enum HealthTypes {
         HKQuantityType(.cyclingPower),
         HKQuantityType(.cyclingCadence),
         HKQuantityType.workoutType(),
+        HKSeriesType.workoutRoute(),
     ]
 }

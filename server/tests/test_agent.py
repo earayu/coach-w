@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from coachw.agent.coach import INSTRUCTIONS
-from coachw.agent.worker import end_when_cap_reached, make_metrics_listener, read_session_meta
+from coachw.agent.worker import AthleteInbox, end_when_cap_reached, read_session_meta
 from coachw.coach.brain import CoachBrain
 from coachw.coach.format import format_pace
 from coachw.coach.metrics_state import STALE_AFTER_S, MetricsState
@@ -91,9 +91,15 @@ def brain() -> CoachBrain:
     return CoachBrain(Athlete(athlete_id=str(uuid.uuid4())))
 
 
+def listener(b: CoachBrain):
+    inbox = AthleteInbox()
+    inbox.attach(b, "athlete")
+    return inbox.on_data
+
+
 def test_listener_takes_metrics_only_from_the_athlete():
     b = brain()
-    on_data = make_metrics_listener(b, "athlete")
+    on_data = listener(b)
     raw = json.dumps(FULL).encode()
     on_data(packet(raw, topic="other"))
     on_data(packet(raw, identity="someone-else"))
@@ -105,7 +111,7 @@ def test_listener_takes_metrics_only_from_the_athlete():
 
 def test_listener_drops_bad_frames():
     b = brain()
-    on_data = make_metrics_listener(b, "athlete")
+    on_data = listener(b)
     on_data(packet(b"not json"))
     on_data(packet(json.dumps(FULL | {"v": 2}).encode()))
     on_data(packet(b"[]"))

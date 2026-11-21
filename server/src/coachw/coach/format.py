@@ -39,3 +39,7 @@ def say_pace(seconds: float) -> str:
 
 def say_distance(meters: float) -> str:
     return f"{meters / 1000:.2f} 公里" if meters >= 1000 else f"{meters:.0f} 米"
+
+
+def speed_kmh(speed_mps: float) -> float:
+    return speed_mps * 3.6

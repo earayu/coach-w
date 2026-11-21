@@ -45,6 +45,7 @@ class Director:
     _fired: set[str] = field(default_factory=set)
     _phase: Phase | None = None
     _splits_seen: int = 0
+    _marks_seen: int | None = None
     _topic: int = 0
 
     @property
@@ -99,6 +100,7 @@ class Director:
             events += self._once("start", self._start_facts(targets), Haptic.START, "开始")
         events += self._phase_events(state, targets)
         events += self._split_events(state)
+        events += self._time_mark_events(state)
         events += self._goal_events(state, targets)
         if not events:
             events += self._companion(state, since_spoken_s, since_alert_s)
@@ -117,7 +119,7 @@ class Director:
     def _start_facts(self, targets: Mapping[str, float]) -> str:
         goals = self.profile.describe_targets(targets)
         goal_text = f"今天的目标：{'，'.join(goals)}。" if goals else ""
-        return f"{self.profile.label}刚刚开始。{goal_text}简短地给用户打气，提醒先慢慢热身。"
+        return f"{self.profile.label}刚刚开始。{goal_text}{self.profile.start_hint}"
 
     def _phase_events(self, state: MetricsState, targets: Mapping[str, float]) -> list[CoachEvent]:
         phase = self.current_phase(state, targets)
@@ -144,6 +146,34 @@ class Director:
             Haptic.SUCCESS,
             f"第 {last.index} {self.profile.split_label}",
         )
+
+    def _time_mark_events(self, state: MetricsState) -> list[CoachEvent]:
+        mark = self.profile.time_mark_s
+        if not mark:
+            return []
+        if self._marks_seen is None:
+            # marks before this session first saw the workout are not announced late
+            self._marks_seen = int((state.first_elapsed_s or 0.0) // mark)
+        n = int(state.elapsed_s // mark)
+        if n <= self._marks_seen:
+            return []
+        self._marks_seen = n
+        energy = state.latest.energy_kcal if state.latest else None
+        return self._once(
+            f"time:{n}",
+            self.profile.time_mark_facts(n * mark, energy),
+            Haptic.SUCCESS,
+            f"{n * mark / 60:.0f} 分钟",
+        )
+
+    def resume(self, state: MetricsState, elapsed_s: float) -> None:
+        """The workout was already under way in an earlier session: what that session announced
+        (start, splits, time marks so far) is not announced again."""
+        self._fired.add("start")
+        self._fired |= {f"split:{s.index}" for s in state.splits}
+        self._splits_seen = len(state.splits)
+        if mark := self.profile.time_mark_s:
+            self._marks_seen = int(elapsed_s // mark)
 
     def _goal_events(self, state: MetricsState, targets: Mapping[str, float]) -> list[CoachEvent]:
         goal, distance, split = targets.get(GOAL_KEY), state.distance_m, self.profile.split_m
@@ -178,14 +208,26 @@ class Director:
         return events
 
     def _end_facts(self, state: MetricsState) -> str:
-        distance = state.distance_m
+        """The one-sentence summary at the end (spec 2 step 6), from whole-workout numbers."""
         parts = [f"用时 {say_duration(state.elapsed_s)}"]
-        if distance:
+        if distance := state.distance_m:
             parts.append(f"距离 {say_distance(distance)}")
-        return (
-            f"{self.profile.label}结束了，{'，'.join(parts)}。"
-            "用一两句话总结并夸奖用户，提醒放松拉伸。需要更多数据可以调用 end_workout_summary。"
-        )
+        # the profile lists its metrics most important first
+        for spec in self.profile.metrics[:2]:
+            mean = state.session_mean(spec.field)
+            if mean is not None and (spoken := spec.read(mean)):
+                parts.append(f"平均{spec.label}{spoken}")
+        energy = state.latest.energy_kcal if state.latest else None
+        if energy:
+            parts.append(f"消耗 {energy:.0f} 千卡")
+        splits = state.splits
+        if len(splits) >= 2:
+            best = min(splits, key=lambda s: s.duration_s)
+            parts.append(
+                f"最快的是第 {best.index} {self.profile.split_label}"
+                f"（{say_duration(best.duration_s)}）"
+            )
+        return f"{self.profile.label}结束了：{'，'.join(parts)}。{self.profile.end_hint}"
 
     # -- companion -----------------------------------------------------------------------------
 

@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "ts": 1763727660000,
+  "activity": "running",
+  "state": "running",
+  "elapsed_s": 1260.5,
+  "distance_m": 3845.2,
+  "energy_kcal": 286.4,
+  "km_marks_s": [318.4, 640.1, 965.8],
+  "means": {
+    "hr_bpm": 151.3,
+    "speed_mps": 3.08,
+    "cadence_spm": 171.2
+  },
+  "samples": 1180
+}

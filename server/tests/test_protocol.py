@@ -5,6 +5,7 @@ import pytest
 
 from coachw.protocol import (
     CoachCue,
+    CoachResume,
     CuePriority,
     Haptic,
     MetricsFrame,
@@ -76,7 +77,7 @@ def test_rejects_missing_required():
 def test_fixtures_are_named_after_their_message():
     names = [p.name for p in FIXTURES.glob("*.json")]
     assert names
-    assert all(n.startswith(("metrics_frame_", "coach_cue_")) for n in names)
+    assert all(n.startswith(("metrics_frame_", "coach_cue_", "coach_resume_")) for n in names)
 
 
 def test_cue_full_fixture():
@@ -123,3 +124,48 @@ def test_priority_rank_order():
     ranks = [p.rank for p in CuePriority]
     assert ranks == sorted(ranks, reverse=True)
     assert CuePriority.EMERGENCY.rank > CuePriority.COMPANION.rank
+
+
+def test_resume_full_fixture():
+    resume = CoachResume.from_dict(load("coach_resume_v1_full.json"))
+    assert resume.activity == "running" and resume.state is WorkoutState.RUNNING
+    assert resume.km_marks_s == (318.4, 640.1, 965.8)
+    assert resume.means["hr_bpm"] == 151.3 and resume.samples == 1180
+    assert "lat" not in resume.to_dict()
+
+
+def test_resume_minimal_fixture():
+    resume = CoachResume.from_dict(load("coach_resume_v1_minimal.json"))
+    assert resume.state is WorkoutState.PAUSED
+    assert resume.distance_m is None and resume.km_marks_s == () and resume.means == {}
+
+
+@pytest.mark.parametrize("path", sorted(FIXTURES.glob("coach_resume_*.json")), ids=lambda p: p.name)
+def test_every_resume_fixture_round_trips(path: Path):
+    data = json.loads(path.read_text())
+    resume = CoachResume.from_dict(data)
+    assert resume.to_dict() == data
+    assert CoachResume.from_dict(resume.to_dict()) == resume
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"v": 2},
+        {"state": "sprinting"},
+        {"km_marks_s": [300, 200]},
+        {"km_marks_s": "300"},
+        {"means": {"hr_bpm": "high"}},
+        {"elapsed_s": True},
+    ],
+)
+def test_rejects_bad_resumes(patch: dict):
+    with pytest.raises(ProtocolError):
+        CoachResume.from_dict(load("coach_resume_v1_minimal.json") | patch)
+
+
+def test_resume_rejects_missing_required():
+    data = load("coach_resume_v1_minimal.json")
+    del data["activity"]
+    with pytest.raises(ProtocolError):
+        CoachResume.from_dict(data)

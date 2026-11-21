@@ -18,6 +18,8 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>coach-w records your route during outdoor workouts and saves it to Health with the workout.</string>
 	<key>WKBackgroundModes</key>
 	<array>
 		<string>workout-processing</string>

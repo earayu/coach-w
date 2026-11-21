@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -206,6 +206,42 @@ class MetricsState:
                 )
             self._split_start = (cross, boundary)
             self._split_means = _Means()
+
+    def seed(
+        self,
+        *,
+        elapsed_s: float,
+        distance_m: float | None,
+        km_marks_s: Sequence[float],
+        means: Mapping[str, float],
+        samples: int,
+    ) -> None:
+        """Continue a workout a previous session saw (`coach.resume`, spec 7.4).
+
+        Rebuilds the completed splits from the kilometre marks, so numbering carries on and the
+        split in progress is timed, and seeds the whole-workout means. Per-split averages and the
+        baseline of the old session are not recovered. Ignored once this session has its own
+        splits: those are first-hand.
+        """
+        if self._splits:
+            return
+        self.started = True
+        self.first_elapsed_s = min(self.first_elapsed_s or 0.0, 0.0)
+        if self.split_m and self.split_m % 1000 == 0:
+            per = int(self.split_m // 1000)
+            start = 0.0
+            for i, mark in enumerate(km_marks_s[per - 1 :: per], start=1):
+                self._splits.append(Split(i, i * self.split_m, mark, mark - start, {}))
+                start = mark
+            self._next_split = len(self._splits) + 1
+            self._split_start = (start, len(self._splits) * self.split_m)
+            self._split_means = _Means()
+        if distance_m is not None and self._last_distance is None:
+            self._last_distance = (elapsed_s, distance_m)
+        count = max(1, samples)
+        for name in SAMPLED_FIELDS:
+            if (value := means.get(name)) is not None and name not in self._session.by_field:
+                self._session.by_field[name] = _Mean(value * count, count)
 
     # -- current state -------------------------------------------------------------------------
 

@@ -18,7 +18,15 @@ from coachw.agent.coach import GREETING, SESSION_CAP_FAREWELL, CoachAgent
 from coachw.agent.loop import CoachLoop
 from coachw.coach.brain import CoachBrain
 from coachw.profiles.base import Athlete
-from coachw.protocol import CUE_TOPIC, METRICS_TOPIC, CoachCue, MetricsFrame, ProtocolError
+from coachw.protocol import (
+    CUE_TOPIC,
+    METRICS_TOPIC,
+    RESUME_TOPIC,
+    CoachCue,
+    CoachResume,
+    MetricsFrame,
+    ProtocolError,
+)
 from coachw.providers import get_realtime_model
 from coachw.session import AGENT_NAME, SessionMeta
 
@@ -44,19 +52,58 @@ def read_session_meta(participant: rtc.RemoteParticipant) -> SessionMeta:
         return SessionMeta(athlete_id="unknown", max_session_s=fallback)
 
 
-def make_metrics_listener(brain: CoachBrain, athlete_identity: str):
-    def on_data(packet: rtc.DataPacket) -> None:
-        if packet.topic != METRICS_TOPIC:
+# How long a new session waits for `coach.resume` before greeting as if the workout is new.
+RESUME_WAIT_S = 2.0
+# Packets kept while the athlete is not known yet (the agent joins after the phone).
+INBOX_LIMIT = 64
+
+
+class AthleteInbox:
+    """Routes the athlete's data packets to the session's brain.
+
+    Registered as soon as the agent is in the room, so a `coach.resume` the phone sends the moment
+    the agent joins is not lost while the agent still waits for the participant; packets are held
+    until `attach` names the athlete. Only that participant is listened to.
+    """
+
+    def __init__(self) -> None:
+        self.brain: CoachBrain | None = None
+        self.identity: str | None = None
+        self.resumed = asyncio.Event()
+        self._held: list[rtc.DataPacket] = []
+
+    def attach(self, brain: CoachBrain, athlete_identity: str) -> None:
+        self.brain, self.identity = brain, athlete_identity
+        held, self._held = self._held, []
+        for packet in held:
+            self.on_data(packet)
+
+    def on_data(self, packet: rtc.DataPacket) -> None:
+        if packet.topic not in (METRICS_TOPIC, RESUME_TOPIC):
             return
-        if packet.participant is None or packet.participant.identity != athlete_identity:
+        if self.brain is None:
+            if len(self._held) < INBOX_LIMIT:
+                self._held.append(packet)
+            return
+        if packet.participant is None or packet.participant.identity != self.identity:
             return
         try:
-            brain.on_frame(MetricsFrame.from_json(packet.data))
+            if packet.topic == METRICS_TOPIC:
+                self.brain.on_frame(MetricsFrame.from_json(packet.data))
+            elif self.brain.resume(CoachResume.from_json(packet.data)):
+                # counts only, never the values: they are health data
+                logger.info("workout resumed with %d splits", len(self.brain.state.splits))
+                self.resumed.set()
         except (ProtocolError, ValueError, TypeError) as e:
             # never log the payload: it is health data
-            logger.warning("dropped bad metrics frame: %s", type(e).__name__)
+            logger.warning("dropped bad %s packet: %s", packet.topic, type(e).__name__)
 
-    return on_data
+
+async def greeting_for(brain: CoachBrain, inbox: AthleteInbox) -> str:
+    """The first-time greeting, or a short "I'm back" when the phone resumes a workout."""
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(inbox.resumed.wait(), RESUME_WAIT_S)
+    return brain.resume_greeting() or GREETING
 
 
 async def end_when_cap_reached(ctx: JobContext, session: AgentSession, seconds: int) -> None:
@@ -74,13 +121,15 @@ async def end_when_cap_reached(ctx: JobContext, session: AgentSession, seconds: 
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
+    inbox = AthleteInbox()
+    ctx.room.on("data_received", inbox.on_data)
     participant = await ctx.wait_for_participant()
     meta = read_session_meta(participant)
     ctx.log_context_fields = {"athlete_id": meta.athlete_id, "room": ctx.room.name}
 
     # all coaching state is per session and per athlete (spec 3.1)
     brain = CoachBrain(Athlete(athlete_id=meta.athlete_id))
-    ctx.room.on("data_received", make_metrics_listener(brain, participant.identity))
+    inbox.attach(brain, participant.identity)
 
     session = AgentSession(llm=get_realtime_model(os.environ.get("COACHW_PROVIDER", "qwen")))
     agent = CoachAgent(brain)
@@ -95,11 +144,14 @@ async def entrypoint(ctx: JobContext) -> None:
 
     await session.start(room=ctx.room, agent=agent)
     cap = asyncio.create_task(end_when_cap_reached(ctx, session, meta.max_session_s))
-    coach = asyncio.create_task(CoachLoop(brain, agent, session, publish_cue).run())
-    ctx.add_shutdown_callback(lambda: _cancel(cap, coach))
+    ctx.add_shutdown_callback(lambda: _cancel(cap))
     logger.info("coach session started, cap %ds", meta.max_session_s)
 
-    session.generate_reply(instructions=GREETING)
+    # The greeting goes first: it is an `instructions=` reply, which Qwen only follows while the
+    # conversation has no user turn yet, and cues are user turns (spec 4.2, 14.1).
+    session.generate_reply(instructions=await greeting_for(brain, inbox))
+    coach = asyncio.create_task(CoachLoop(brain, agent, session, publish_cue).run())
+    ctx.add_shutdown_callback(lambda: _cancel(coach))
 
 
 async def _cancel(*tasks: asyncio.Task) -> None:

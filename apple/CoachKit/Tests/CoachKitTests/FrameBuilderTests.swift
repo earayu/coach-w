@@ -66,3 +66,16 @@ private let t0 = Date(timeIntervalSince1970: 1_763_726_400)
     #expect(frame.powerW == 240)
     #expect(frame.hrBpm == 160)
 }
+
+@Test func locationFillsCoordinatesAndAltitude() throws {
+    var builder = FrameBuilder(activity: "hiking")
+    builder.apply(.location(latitude: 39.9042, longitude: 116.4074, altitudeMeters: 845), at: t0)
+    let first = builder.frame(state: .running, elapsed: 1, at: t0)
+    let frame = try #require(first)
+    #expect(frame.lat == 39.9042 && frame.lon == 116.4074 && frame.altM == 845)
+    // a fix without valid altitude keeps the last altitude
+    builder.apply(.location(latitude: 39.9043, longitude: 116.4075, altitudeMeters: nil), at: t0 + 2)
+    let second = builder.frame(state: .running, elapsed: 3, at: t0 + 2)
+    let next = try #require(second)
+    #expect(next.lat == 39.9043 && next.altM == 845)
+}

@@ -78,6 +78,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         WKBackgroundModes:
           - workout-processing
+        NSLocationWhenInUseUsageDescription: "coach-w records your route during outdoor workouts and saves it to Health with the workout."
     entitlements:
       path: Watch/CoachWWatch.entitlements
       properties:

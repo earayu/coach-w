@@ -22,6 +22,9 @@ final class MirrorReceiver: NSObject {
     @ObservationIgnored private var session: HKWorkoutSession?
     /// Called with every batch of received frames, e.g. to forward them to the coach.
     @ObservationIgnored var onFrames: (@MainActor ([MetricsFrame]) -> Void)?
+    /// Called when a workout session from the watch attaches, and when it ends.
+    @ObservationIgnored var onSessionStarted: (@MainActor (WorkoutActivity) -> Void)?
+    @ObservationIgnored var onSessionEnded: (@MainActor () -> Void)?
 
     var isActive: Bool { state != .notStarted && state != .ended }
 
@@ -80,6 +83,7 @@ final class MirrorReceiver: NSObject {
         latest = nil
         stats = FrameStats()
         lastError = nil
+        if let activity { onSessionStarted?(activity) }
     }
 
     private func receive(_ frames: [MetricsFrame]) {
@@ -100,7 +104,10 @@ extension MirrorReceiver: HKWorkoutSessionDelegate {
     ) {
         Task { @MainActor in
             self.state = toState
-            if toState == .ended { self.session = nil }
+            if toState == .ended {
+                self.session = nil
+                self.onSessionEnded?()
+            }
         }
     }
 

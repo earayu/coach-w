@@ -57,6 +57,7 @@ class Runner:
         self.seq = 0
         self.elapsed = 0.0
         self.distance = 0.0
+        self.energy = 0.0
 
     def send(self, state: WorkoutState = WorkoutState.RUNNING, **metrics: float | None) -> None:
         self.seq += 1
@@ -79,6 +80,8 @@ class Runner:
         hr: float | None = 150,
         cadence: float | None = 170,
         gct: float | None = None,
+        power: float | None = None,
+        kcal_per_s: float | None = None,
         state: WorkoutState = WorkoutState.RUNNING,
     ) -> None:
         for _ in range(int(seconds)):
@@ -86,6 +89,15 @@ class Runner:
             if state is WorkoutState.RUNNING:
                 self.elapsed += 1
                 self.distance += speed or 0
-            self.send(state, speed_mps=speed, hr_bpm=hr, cadence_spm=cadence, gct_ms=gct)
+                self.energy += kcal_per_s or 0
+            self.send(
+                state,
+                speed_mps=speed,
+                hr_bpm=hr,
+                cadence_spm=cadence,
+                gct_ms=gct,
+                power_w=power,
+                energy_kcal=self.energy if kcal_per_s is not None else None,
+            )
             if self.on_tick:
                 self.on_tick()

@@ -4,7 +4,7 @@
 |---|---|
 | 版本 | v0.1 |
 | 日期 | 2026-11-21 |
-| 状态 | 草案。M1 待户外真机验收；M2 服务端已部署上云，iOS 已接入 LiveKit（手机端开口对话待实测）；M3 教练大脑代码完成，待真实跑步验收（第 13 节）。 |
+| 状态 | 草案。M1 待户外真机验收；M2 服务端已部署上云，iOS 已接入 LiveKit（手机端开口对话待实测）；M3 教练大脑代码完成，待真实跑步验收；M4 扩展（散步 / 徒步 / 骑行 / 兜底档案、断网兜底与重连续接、跑后总结与本机记录、手表 GPS）代码完成，待三种运动户外实测（第 13 节）。 |
 
 这是 coach-w 最核心的文档。产品范围、领域模型、架构、技术选型都以本文为准；改动这些内容时先改本文，再改代码。
 
@@ -178,7 +178,7 @@ M3 的工具：
 
 | 工具 | 返回 |
 |---|---|
-| `get_metrics` | 最新一帧里有的指标、`age_s`、`pace_per_km`；超过 10 秒没有新帧时 `available: false`；不含坐标 |
+| `get_metrics` | 最新一帧里有的指标、`age_s`、`pace_per_km`（档案按速度读的运动改为 `speed_kmh`）、`spoken`（档案给出的各指标口语读法，如骑行"每小时 25 公里"）；超过 10 秒没有新帧时 `available: false`；不含坐标 |
 | `get_progress` | 阶段、用时、距离、最近 5 个分段（用时和分段平均值）、目标与剩余距离、静音剩余时间 |
 | `set_quiet(minutes)` | 静音 0–30 分钟（0 取消），期间只放行紧急 cue |
 | `end_workout_summary` | 总用时、距离、档案关心的各指标全程平均值及口语读法、能量、全部分段、最快 / 最慢分段、各类提醒次数 |
@@ -201,10 +201,10 @@ CoachLoop（每秒一次）─▶ CoachBrain.tick ─▶ EventEngine + Director 
 
 - **`MetricsState`**（`metrics_state.py`）：时间轴用手表的 `elapsed_s`，所以手机后台恢复时批量补发的帧也落在正确位置；新鲜度用服务端收帧时间，超过 10 秒判为过期。只有 `state == running` 的帧进入窗口、分段和基线。提供任意长度的滑动窗口（均值 / 最值，至少 3 个样本、覆盖窗口 60% 才算数，例如 10 / 30 / 60 / 120 秒）、"连续满足条件多久"（缺测的样本打断连续）、按档案分段长度切分（跨分段点时线性插值）、基线（档案定义的时间段，跑步为第 5–15 分钟，用来做前后半程对比）、全程均值。只保留最近 5 分钟的样本，坐标不进入任何聚合。
 - **`EventEngine`**（`events.py`）：通用规则类型 `Sustained`（连续高于 / 低于阈值多久）、`WindowVsBaseline`（窗口均值相对基线变化）、`WindowVsTarget`（窗口均值偏离目标，可先换算成配速等单位）、`SplitTrend`（连续几个分段单向变化）。阈值可以是常数，也可以是会话目标的名字，**目标或传感器缺失时规则不触发**；数据过期或 workout 暂停时全部规则静默；规则可设起始时间（例如热身期间不提配速）。
-- **`Director`**（`director.py`）：阶段按档案定义（按用时或按目标距离比例进入）；节点：开始、阶段切换、每个分段、半程、最后一个分段、完成目标、结束，每个只触发一次；手表数据中断 30 秒提示一次；没有节点时按档案间隔发陪伴 cue；档案定义的时长（跑步 5 分钟）内没有纠正或紧急提醒时，间隔乘以档案的"平稳系数"。
+- **`Director`**（`director.py`）：阶段按档案定义（按用时或按目标距离比例进入）；节点：开始、阶段切换、每个分段、半程、最后一个分段、完成目标、结束，每个只触发一次；手表数据中断 30 秒提示一次；没有节点时按档案间隔发陪伴 cue；档案定义的时长（跑步 5 分钟）内没有纠正或紧急提醒时，间隔乘以档案的"平稳系数"。没有距离分段的档案可设时间节点（每 N 分钟，M4 兜底档案为 10 分钟），会话中途加入时不补报已过去的节点。开始节点的话术由档案的 `start_hint` 给出。结束节点即跑后一句话总结（M4）：用时、距离、档案前两个指标的全程均值（如平均心率、平均配速 / 时速）、能量、最快分段，加档案的 `end_hint`（"用一句话总结并夸奖用户…"），数据与 `end_workout_summary` 同源，不需要模型再调工具。
 - **`CueQueue`**（`cue_queue.py`）：4.5 的全部规则。同一冷却键已在队列里时不重复入队，更紧急的替换掉不那么紧急的；不那么紧急的 cue 的冷却挡不住更紧急的（心率"偏高"刚播过，"过高"照样能播），反之更紧急的播过后同键的次级提醒在其冷却期内不再出现。密度：非紧急 cue 每滚动一分钟不超过档案上限，两条之间至少间隔档案的 `min_gap_s`；紧急 cue 不受密度和静音限制。用户说话（`user_state == speaking`）或教练说话 / 思考（`agent_state` 为 `speaking` / `thinking`）时只放行紧急 cue，教练在说话时紧急 cue 先 `interrupt()` 再说。开启静音时清掉队列里的非紧急 cue。
 - **`CoachBrain`**（`brain.py`）：一个会话一个，按 `athlete_id` 区分，全部是内存态。把 cue 转成给模型的指令（"【教练提示】事实 + 语气要求 + 只用这里的数字"），有震动的紧急 / 纠正 / 节点 cue 同时生成 `coach.cue`（陪伴 cue 不震动）。也负责回答工具。
-- **Agent 接入**（`agent/loop.py`、`agent/coach.py`、`agent/worker.py`）：`CoachLoop` 每秒调用一次 `tick`；状态摘要每 45 秒替换一次（`update_chat_ctx`，删掉上一条再加新的，对话里始终只有一条摘要），只在双方都没说话时写入。日志只记 cue 的 id、类型、优先级，不记事实文本（含指标值）。
+- **Agent 接入**（`agent/loop.py`、`agent/coach.py`、`agent/worker.py`）：Agent 一进房间就注册数据回调（`AthleteInbox`），在知道运动者身份前先暂存数据包，避免手机在 Agent 加入瞬间发的 `coach.resume` 丢失；开场白最多等 2 秒的 `coach.resume`，收到则改为"语音刚连上、运动没中断（用时、距离）"的一句话，否则是首次问候。开场白先发、`CoachLoop` 后启动：开场白是 `instructions=` 回复，Qwen 只在会话里还没有用户消息时照做，而 cue 是用户消息（14.1）。`CoachLoop` 每秒调用一次 `tick`；状态摘要每 45 秒替换一次（`update_chat_ctx`，删掉上一条再加新的，对话里始终只有一条摘要），只在双方都没说话时写入。日志只记 cue 的 id、类型、优先级，不记事实文本（含指标值）。
 - 运动者的最大心率还没有从手机传上来（3.1），跑步档案暂时按 190 计算心率上限（90% → 171）和安全上限（97% → 184）；`Athlete.max_hr_bpm` 已留好接缝。
 
 ## 5. 运动档案（Activity Profile）
@@ -239,7 +239,7 @@ CoachLoop（每秒一次）─▶ CoachBrain.tick ─▶ EventEngine + Director 
 
 - 结构是 `profiles/base.py` 的 `ActivityProfile`（冻结的 dataclass）：`activity_types`、`mode`、`metrics`（字段、名称、口语读法）、`phases`、`split_m` 与分段播报文案、`rules`（4.8 的通用规则实例）、`cadence`（陪伴间隔、平稳系数、每分钟上限、最小间隔）、`prompt`、陪伴话题、默认目标、`tools`、基线时间段。
 - 注册表 `profiles/registry.py`：按线协议 `activity` 查档案，一个运动类型只能属于一个档案；没有专属档案的运动用兜底档案。
-- 兜底档案（`fallback.py`）在 M3 只是最小版本：陪伴模式、只看心率和时长、一条心率安全规则。完整的兜底、散步、骑行档案在 M4。
+- 兜底档案（`fallback.py`）M3 是最小版本，M4 已补全（见下文 5.4）。
 - 测试 `tests/test_profiles.py` 检查 `coach/` 里没有出现运动类型名字。
 
 跑步档案（`running.py`）：
@@ -260,6 +260,41 @@ CoachLoop（每秒一次）─▶ CoachBrain.tick ─▶ EventEngine + Director 
 
 阈值是按常识定的初值，要在真实跑步里调（14.2）。
 
+### 5.4 实现（M4）
+
+`ActivityProfile` 新增字段（都有默认值，跑步档案不变）：`start_hint` / `end_hint`（开始节点、结束总结的话术）、`speed_as_pace`（速度读作配速还是时速，决定 `get_metrics` 给 `pace_per_km` 还是 `speed_kmh`）、`time_mark_s` / `time_mark_facts`（没有距离分段时的时间节点）。注册表：`running` → 跑步，`walking` → 散步，`hiking` → 徒步，`cycling` → 骑行，其余（含 iOS 的"其他"）→ 兜底。内核仍不出现运动类型（`tests/test_profiles.py` 检查）。
+
+散步 / 徒步（`walking.py`，两个档案共用一套定义，名称与提示词不同）：
+
+| 项 | 内容 |
+|---|---|
+| 模式 | 陪伴 |
+| 阶段 | 只有"散步中 / 徒步中" |
+| 分段 | 每公里，只顺口报用时，不点评快慢 |
+| 规则 | 只有心率过高（紧急）：连续 20 秒高于安全上限（最大心率 97%）；冷却 120 秒。没有任何配速、跑姿纠正 |
+| 陪伴 | 每 5 分钟（平稳时 7.5 分钟），话题以聊天为主，夹带安全关怀（路况、喝水）；徒步加上坡、下坡、补给 |
+| 密度 | 每分钟最多 2 条，两条至少间隔 20 秒 |
+| 读法 | 配速"每公里几分几秒"；徒步提海拔 |
+
+骑行（`cycling.py`）：
+
+| 项 | 内容 |
+|---|---|
+| 模式 | 教练，但每次一句、很短，路况安全优先 |
+| 阶段 | 热身 → 主骑行（10 分钟后）→ 放松（完成目标距离 90%） |
+| 分段 | 每 5 公里，播报用时和这 5 公里的平均时速 |
+| 读法 | 速度读"每小时多少公里"（`speed_as_pace = False`），踏频"每分钟多少转"，功率"多少瓦" |
+| 心率过高（紧急）/ 偏高（纠正） | 连续 15 秒高于安全上限 / 连续 45 秒高于目标上限（最大心率 90%），共用冷却键 |
+| 踏频下降（纠正） | 热身后，最近 2 分钟平均踏频比基线低 10% 以上；冷却 10 分钟 |
+| 功率下降（纠正） | 热身后，最近 3 分钟平均功率比基线低 15% 以上；冷却 15 分钟 |
+| 密度 | 陪伴每 7 分钟，每分钟最多 2 条，两条至少间隔 20 秒 |
+
+没有蓝牙踏频 / 功率传感器时这两个字段缺省，窗口和基线都没有数据，规则不触发（有单元测试）。
+
+通用兜底（`fallback.py`）：陪伴模式，只用心率、时长、能量；不分距离段，每 10 分钟一个时间节点（"已经运动 20 分钟，消耗了 150 千卡"）；心率过高（紧急，15 秒）和心率偏高（纠正，60 秒，冷却 10 分钟）；提示词要求不提距离、配速。
+
+单元测试：`tests/test_activities.py`（各档案用合成帧端到端跑 `CoachBrain`：节点、规则、缺传感器不误报、读法、结束总结、坐标不进工具结果）、`tests/test_resume.py`（会话续接，见 7.4）。
+
 ## 6. 数据通路
 
 ### 6.1 手表：唯一的运动数据源
@@ -274,6 +309,7 @@ CoachLoop（每秒一次）─▶ CoachBrain.tick ─▶ EventEngine + Director 
 - 备选：`WatchConnectivity`。
 - 参考：Apple 示例 [Building a multidevice workout app](https://developer.apple.com/documentation/healthkit/building-a-multidevice-workout-app)（WWDC23 10023，MIT 许可）。M1 按它的结构重写，没有逐字复制文件。
 - 实现：手表 `apple/Watch/WorkoutController.swift`（主会话、采集、发帧），iPhone `apple/iOS/MirrorReceiver.swift`（接镜像会话、解帧、统计）。读数换算成线协议单位、节流（最多 1 帧/秒，状态变化立即发）、由步数推算步频都在 `CoachKit.FrameBuilder`，命令行可测。运动进行中手表每秒发一帧心跳（没有新读数也发），保证时长持续更新；这样收不到帧就能判断为链路断开，而不是"暂时没有新数据"。首次真机运行时只靠 HealthKit 回调驱动，平均间隔为 1.82 秒，所以加了心跳。
+- GPS（M4）：户外运动（跑步、散步、徒步、骑行；"其他"不开）手表用 `CLLocationManager` 定位（`apple/Watch/LocationFeed.swift`，首次使用时请求"使用期间"定位权限，水平精度差于 50 米的点丢弃），定位点写进 `HKLiveWorkoutBuilder.seriesBuilder(for: .workoutRoute())` 返回的 `HKWorkoutRouteBuilder`，随 workout 一起保存到 Apple 健康（不单独调 `finishRoute`）；最新一个点经 `FrameBuilder` 填进指标帧的 `lat` / `lon` / `alt_m`（没有有效垂直精度时不更新海拔）。坐标不打日志。
 - 步频：HealthKit 的跑步数据没有直接的步频类型，步行类运动由累计步数在 15 秒窗口内推算；骑行用传感器的 `cyclingCadence`。
 - 手机端统计在 `CoachKit.FrameStats`：收到、丢失、乱序帧数，平均间隔，最近一帧的手机与手表时间差（包含时钟偏差）。界面上的"数据流"一节用来回答 14.2 的频率和后台问题。
 
@@ -332,7 +368,29 @@ CoachLoop（每秒一次）─▶ CoachBrain.tick ─▶ EventEngine + Director 
 - iPhone 收到后到期的直接丢弃，未到期的经镜像会话 `sendToRemoteWorkoutSession` 原样转给手表；手表再检查一次是否过期，然后震动并在表盘顶部显示文案，最多 4 秒且不超过 `expires_at`。iPhone → 手表这条通道目前只传 cue。
 - 手机和手表用自己的系统时间判断过期，依赖三端时钟大致同步（NTP），偏差会直接加减在剩余时间上。
 
-`coach.control`（双向：开始、暂停、结束、静音）在 M3 还用不到（静音由用户对教练说、模型调用 `set_quiet` 完成），推迟到 M4 有按键 / 断网兜底需求时再定义。
+`coach.resume`（iPhone → 服务端，M4）：语音会话（重新）加入一个已经在进行的运动时，手机把它从手表帧里统计的运动摘要发给新会话，让教练接着这次运动继续，而不是从头开始（7.4、8.1）。
+
+```json
+{
+  "v": 1,
+  "ts": 1763727660000,
+  "activity": "running",
+  "state": "running",
+  "elapsed_s": 1260.5,
+  "distance_m": 3845.2,
+  "energy_kcal": 286.4,
+  "km_marks_s": [318.4, 640.1, 965.8],
+  "means": { "hr_bpm": 151.3, "speed_mps": 3.08, "cadence_spm": 171.2 },
+  "samples": 1180
+}
+```
+
+- data channel topic `coach.resume`，可靠传输。手机在连上房间时（Agent 已在）和 Agent 加入房间时各发一次，服务端只采纳第一份。
+- 必填：`v`、`ts`（手机 Unix 毫秒）、`activity`、`state`、`elapsed_s`。可缺省：`distance_m`、`energy_kcal`、`km_marks_s`（第 i+1 公里完成时的运动用时，单调不减；服务端按档案分段长度取，例如骑行取每第 5 个）、`means`（全程均值，键是指标帧字段名）、`samples`（均值对应的运行帧数）。空列表 / 空对象不上线。
+- **不含坐标。** 只有分段时刻和均值，没有任何位置。
+- 服务端（`CoachBrain.resume`）：按 `activity` 加载档案，用公里时刻重建已完成分段（分段编号接着来，当前分段从上一个分段点开始计时）、写入全程均值；Director 把开始节点、已完成的分段和时间节点标为已播。已有本会话亲眼看到的分段时不覆盖；分段内均值、跑姿基线、提醒次数和 `adjust_target_pace` 设的目标不恢复。
+
+`coach.control`（双向：开始、暂停、结束、静音）仍然用不到：静音由用户对教练说、模型调用 `set_quiet` 完成；断网兜底在手机本地完成，不需要和服务端交换控制消息。
 
 ### 6.4 iPhone → 服务端
 
@@ -373,7 +431,8 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 - 连接竞态：`start()` 每次带一个代数，`stop()` 让代数加一；拿 token、连房间、开麦这几步之间发现代数变了就放弃并断开刚连上的房间，所以"连接中"点结束语音后不会再连上开麦。`RoomDelegate` 回调只处理当前房间的事件。
 - 设置：邀请码和服务器地址在判断"已配置"、发请求、持久化时都去掉首尾空白和换行，设置页关闭时内存里的值也一并裁剪；服务器地址只接受 `http` / `https`（`CoachKit.ServerAddress`）。"静音"按钮只在已连接时可用。
 - 开发构建（DEBUG）可在启动时用环境变量配置：`COACHW_API_BASE_URL`、`COACHW_INVITE_CODE`（写入设置并保存），`COACHW_AUTOCONNECT=1` 启动后自动连接，方便用 `xcrun devicectl device process launch --environment-variables` 免手输测试。正式构建不读这些变量。
-- 界面：首页顶部"语音教练"一节，显示连接状态、已发送指标帧数，按钮为连接教练 / 静音 / 结束语音；右上角"设置"填邀请码和服务器地址。
+- 界面：首页顶部"语音教练"一节，显示连接状态、已发送指标帧数，按钮为连接教练 / 静音 / 结束语音；右上角"设置"填邀请码和服务器地址；左上角"运动记录"（M4）。
+- 教练说过的话（M4）：livekit-agents 把双方的转写以文字流发到 `lk.transcription`；`VoiceSession` 注册这个 topic，发送者不是自己（用户自己的话以用户身份发出）的整段文字交给 `WorkoutRecorder` 记下。
 - LiveKit 的 WebRTC 二进制包约 690 MB，从 GitHub Releases 下载，国内网络下 xcodebuild 自带的下载会超时。可先用 `curl -C -` 断点续传，再按 SwiftPM 的命名放进 `~/Library/Caches/org.swift.swiftpm/artifacts/`（见 `docs/setup.md`）。
 
 ### 7.3 音频与耳机
@@ -389,6 +448,14 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 - iPhone 本地用 `AVSpeechSynthesizer` 播报紧急类和节点类 cue 的模板文本（由本地规则产生），手表震动照常。
 - 网络恢复后自动重连，新会话带上当前状态摘要。
 
+实现（M4）：
+
+- **手机跟踪这次运动**：`CoachKit.WorkoutTracker` 吃手表发来的每一帧（只算 running 帧，时间轴用 `elapsed_s`，不保留坐标），得到公里时刻（跨公里点插值）、全程均值、最高心率、能量。`WorkoutRecorder`（`apple/iOS/Records/`）在镜像会话开始时新建一份，用于续接摘要、本地兜底和运动记录。
+- **本地兜底规则**：`CoachKit.LocalCoach`，纯逻辑、命令行可测。只有紧急和节点：心率连续 15 秒高于 184（与服务端默认安全上限一致；缺测打断连续；冷却 90 秒）、每 N 公里（跑步 / 散步 / 徒步 1 公里，骑行 5 公里，与服务端档案的分段一致，表在 `WorkoutActivity.offlineCoach`）、"其他"每 10 分钟、结束。每条带 20 秒过期时间。它在联网时也跑，所以断网那一刻不会补报之前的节点；只有"想要教练但当前没连上"（`VoiceSession.needsLocalFallback`，含重连中）时才由 `LocalSpeaker` 播报并经镜像会话发给手表震动；联网时这些由服务端负责。过期的不播。
+- **播报**：`LocalSpeaker` 用 `AVSpeechSynthesizer`（zh-CN）。LiveKit 还占着 `.playAndRecord` 时直接借用；否则临时切到 `.playback` + `voicePrompt` + `duckOthers`，说完交还。紧急提醒打断正在播的本地话。已建立的连接断开时先说一句"网络断了，教练暂时离线…"。
+- **自动重连**：`VoiceSession` 把断开分两类（`CoachKit.ReconnectPolicy`）：服务端有意结束（房间被删——会话时长到了、被移出、身份重复）和被拒（邀请码无效、当日分钟用完、其他 4xx）不重连；其余（网络、5xx、LiveKit 自身重连失败）按 1、2、5、10、20、30 秒退避重试（之后每 30 秒），每次都重新向 token API 申请 token、新建房间；`NWPathMonitor` 发现网络恢复时立即重试。状态栏显示"网络断开，本机播报中，正在重连…"和自动重连次数。用户点"结束语音"停止一切重试。
+- **状态续接**：新会话连上（或 Agent 加入）时发 `coach.resume`（6.3）。服务端接着原来的分段和节点继续，开场白换成"我在线了，继续陪你跑，目前用时…"。本机冒烟见 14.1。
+
 ## 8. 整体架构
 
 ```text
@@ -400,7 +467,7 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 ┌──────────────▼───────────────────┐
 │ iPhone（iOS App）                 │
 │ 协议转发、音频会话、LiveKit 客户端    │
-│ 本地兜底播报、运动记录界面            │
+│ 本地兜底播报、重连续接、运动记录       │
 └──────────────┬───────────────────┘
                │ HTTPS（token）/ WebRTC
 ┌──────────────▼───────────────────┐
@@ -442,7 +509,7 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 
 ```text
 apple/
-  CoachKit/          SwiftPM 包：线协议（MetricsFrame、CoachCue）、FrameBuilder、FrameStats、ServerAddress，iOS 和 watchOS 共用
+  CoachKit/          SwiftPM 包：线协议（MetricsFrame、CoachCue、CoachResume）、FrameBuilder、FrameStats、ServerAddress、WorkoutTracker、LocalCoach、ReconnectPolicy、WorkoutRecord，iOS 和 watchOS 共用
   project.yml        XcodeGen 工程定义（Bundle ID com.earayu.coachw，手表 .watchkitapp）
   Shared/            两个 App 共用、依赖 HealthKit 的小文件（运动类型表、显示格式）
   iOS/               iPhone App
@@ -454,7 +521,7 @@ server/
     agent/           LiveKit Agent：worker（入口、会话上限）、coach（提示词、工具）、loop（每秒教练循环）
     api/             token API：app（FastAPI）、invites、quota（分钟账本）、tokens、config
     coach/           MetricsState、Director、EventEngine、CueQueue、CoachBrain（M3，4.8）
-    profiles/        运动档案：base（结构）、registry、running、fallback（M3，5.3）
+    profiles/        运动档案：base（结构）、registry、running、walking、cycling、fallback（5.3、5.4）
     providers/       实时模型注册表；qwen.py（从 voicelab 迁移，含插件缺陷绕行，4.7）
   tests/             单元测试；tests/e2e/smoke_voice.py 是需要真 Key 的端到端冒烟，不被 pytest 收集
   Dockerfile         api 和 agent 共用的镜像
@@ -497,7 +564,9 @@ docs/                文档
 ## 11. 隐私与密钥
 
 - 心率、位置是健康和隐私数据。服务端只在会话内存里使用，第一版不持久化；日志里不打指标原值和坐标。
-- 指标会随工具结果发给模型厂商（DashScope），这是实时教练的前提。坐标不发：`get_metrics` 不返回 `lat` / `lon`。
+- 指标会随工具结果发给模型厂商（DashScope），这是实时教练的前提。坐标不发：`get_metrics` 不返回 `lat` / `lon`，服务端的窗口、分段、摘要、cue 都不含坐标（有单元测试），`coach.resume` 也不带坐标。
+- GPS（M4）：手表把轨迹存进 Apple 健康（随 workout），最新坐标随指标帧经 iPhone 转给服务端，只在会话内存里；手表、iPhone、服务端都不打印坐标。
+- 本机运动记录（M4）：iPhone 在 Application Support 下每次运动存一个 JSON（指标摘要、每公里用时、教练说过的话，不含坐标），文件保护级别 `completeUntilFirstUserAuthentication`，只在本机，可在记录列表里左滑删除。
 - 日志只记 `athlete_id` 和房间名，不记名字、邀请码、指标值；坏帧只记错误类型。LiveKit Agents 在 DEBUG 级别会打印对话文本（可能含说出口的心率），所以 Agent 在本机和生产都用 INFO 级别。
 - 客户端不持有模型 Key。LiveKit token 短期有效、限定房间。
 - 仓库公开：不提交任何凭据、`.env`、个人数据、真实运动记录。测试样例使用合成数据。
@@ -521,7 +590,7 @@ docs/                文档
 | **M1 数据通路** | 基于 Apple 示例的 iOS + watchOS App，镜像会话，iPhone 实时显示指标帧 | 真机跑一次 1 公里：iPhone 锁屏也持续收到 ≥1 Hz 心率和配速 |
 | **M2 语音通路** | 服务端部署（LiveKit + agent + token API），iOS 接入 LiveKit，耳机对话 | 户外戴韶音边走边和教练聊天，可打断 |
 | **M3 教练大脑** | MetricsState、Director、EventEngine、CueQueue、跑步档案、工具、手表震动 | 真实 5 公里：分段播报、超心率提醒、问配速答得对 |
-| **M4 扩展** | 散步、骑行、通用兜底档案；断网兜底；跑后总结 | 三种运动各实测一次 |
+| **M4 扩展** | 散步、骑行、通用兜底档案；断网兜底；跑后总结；手表 GPS | 三种运动各实测一次 |
 
 ### 13.1 M0 进度
 
@@ -539,7 +608,7 @@ docs/                文档
 | XcodeGen 工程：iOS App 内嵌 watchOS App，HealthKit 能力 | 完成。模拟器构建通过；真机签名构建通过（2026-11-21，自动签名生成了两个 App 的开发描述文件，签名后的权限包含 HealthKit） |
 | 手表：主 workout 会话、镜像、采集、发帧，暂停/继续/结束，可在手表或 iPhone 上开始 | 代码完成，未上真机 |
 | iPhone：接镜像会话、实时指标、数据流统计、暂停/继续/结束 | 代码完成，未上真机 |
-| GPS 坐标（`lat`/`lon`/`alt_m`） | 未做。需要手表端定位权限和 `HKWorkoutRouteBuilder`，M1 真机通过后补 |
+| GPS 坐标（`lat`/`lon`/`alt_m`） | M4 代码完成（6.2），真机待测 |
 | 真机安装 | 完成（2026-11-21）：iPhone 16 Pro（iOS 27.2.1）和 Apple Watch Series 8（watchOS 26.6.1）都已装上，手表 App 能启动 |
 | 真机验收：1 公里，iPhone 锁屏也持续收到 ≥1 Hz 心率和配速 | 待维护者实测 |
 
@@ -573,6 +642,29 @@ docs/                文档
 | M2 iOS QA 修复（输入裁剪与 scheme 校验、连接竞态、帧串行发送、静音按钮） | 完成；`ServerAddress` 有单元测试，其余为模拟器构建通过 |
 | 真实 5 公里（M3 完成标志：分段播报、超心率提醒、问配速答得对） | 待维护者实测 |
 
+### 13.5 M4 进度
+
+| 项 | 状态 |
+|---|---|
+| 散步 / 徒步档案（陪伴模式、每公里只报用时、仅心率安全规则、安全关怀话题，5.4） | 完成，有单元测试 |
+| 骑行档案（教练模式、短句、时速读法、每 5 公里、踏频 / 功率规则缺传感器自动失效，5.4） | 完成，有单元测试；本机冒烟问速度答"每小时 25 公里"（14.1） |
+| 通用兜底档案（心率 / 时长 / 能量、每 10 分钟时间节点，5.4） | 完成，有单元测试 |
+| 内核无运动类型分支 | 测试检查通过 |
+| 跑后一句话总结（结束节点带全程数据，4.8） | 完成，有单元测试 |
+| 线协议 `coach.resume` v1：spec、fixtures、`coachw.protocol`、`CoachKit` 及双端测试（6.3） | 完成 |
+| 服务端续接：`CoachBrain.resume`、`AthleteInbox` 暂存、续接开场白、开场白先于 cue | 完成，有单元测试；本机冒烟通过（14.1） |
+| 手机端跟踪 / 本地兜底规则 / 重连策略（`WorkoutTracker`、`LocalCoach`、`ReconnectPolicy`） | 完成，`swift test` 覆盖 |
+| iOS 断网播报（`LocalSpeaker`）、自动重连（退避 + 网络恢复立即重试）、发 `coach.resume`（7.4） | 代码完成，模拟器构建通过；真机断网待测 |
+| iOS 本机运动记录（保存、列表、详情：指标、每公里、教练说过的话），首页"刚刚完成" | 代码完成，模拟器构建通过；真机待测 |
+| 手表 GPS：定位权限、`HKWorkoutRouteBuilder`、帧里的 `lat` / `lon` / `alt_m`（6.2） | 代码完成，模拟器构建通过；真机待测 |
+| 三种运动各户外实测一次（M4 完成标志） | 待维护者实测，见下 |
+
+需要维护者真机户外实测的验收项（iPhone + Apple Watch + 韶音耳机，手机连生产服务）：
+
+1. **散步 / 徒步（20 分钟以上）**：教练以聊天为主、不纠正配速；每公里顺口报一次用时；问"走了多远"答对；徒步时问海拔答得出来；结束时一句话总结。顺带看锁屏下是否一直有声音。
+2. **骑行（30 分钟以上，有条件时带踏频 / 功率传感器各骑一次）**：每句话都很短；问速度读"每小时多少公里"；每 5 公里播报一次；没有传感器时从不提踏频、功率；有传感器时数值读法正确；路上不干扰安全。
+3. **跑步 + 断网（5 公里，中途开飞行模式 1–2 分钟再关）**：断网后耳机里听到"网络断了…"，之后整公里由手机本地播报、手表照常震动、心率过高（可用高强度冲刺触发）本地播报；关飞行模式后几秒内自动重连，教练说"我在线了…"并带上用时和距离，分段编号接着原来的继续，不重报开始和已过的公里；结束后 App"运动记录"里有这次的指标、每公里用时和教练 / 本机说过的话；Apple 健康里这次 workout 有路线地图。
+
 ## 14. 验证记录
 
 ### 14.1 已实测
@@ -593,6 +685,7 @@ docs/                文档
 | Caddyfile 路由（本机 Caddy 2.11.9，域名 localhost） | 通过（2026-11-21）。`/v1/session` 到 API（200 / 401），其余到 LiveKit（`/` 返回 OK，`/rtc` 无效 token 返回 401），`/livekit/webhook` 不对外（404） |
 | 服务端上云部署（阿里云香港 `ecs.e-c1m2.large` 2 核 4G，Ubuntu 24.04.5，内核 6.8，Docker 29.10.0，Compose v5.8.0） | 通过（2026-11-22）。`docker compose up -d --build` 一次起来四个容器；Caddy 启动后约 8 秒拿到 Let's Encrypt 证书（颁发者 YE2，90 天）。LiveKit 以 `NODE_IP` 对外宣告，Agent 注册为 `coach-w` 并预热 2 个进程。从本机 Mac 经公网：`/` 返回 OK；`POST /v1/session` 合法码 200，`server_url` 为 `wss://<域名>`，非法码 401；`/livekit/webhook` 和 `/healthz` 返回 404；`:8081` 公网不可达。发现 Agent 健康检查默认监听所有网卡（安全组没放通，但仍改为只绑 127.0.0.1），Docker 日志默认不轮转（已加上限） |
 | 公网端到端语音冒烟（`smoke_voice.py --api https://<域名> --agent-log-cmd "ssh ... docker compose logs agent"`，客户端为本机 Mac，中国内地家庭宽带） | UDP 通过，TCP 回退链路通过但一项检查未过（2026-11-22）。UDP：连续 3 轮全部通过，ICE 选中 `udp` 到服务器 50000–60000 端口；每轮心率答 137、配速答每公里 5 分 32 秒、功率答没有数据，都先调用了 `get_metrics`。7881/TCP 回退（在服务器上用 iptables 临时丢弃本机来的 UDP）：ICE 选中 `tcp` 到 7881，开场白、心率、配速、功率回答都正确，但问配速那一轮模型没有再调用 `get_metrics`，直接复用了上一轮工具结果里的数字（`pace_tool_called` 未过；看起来与传输方式无关，见 14.2） |
+| M4 端到端冒烟（`server/tests/e2e/smoke_m4.py`，本机 `dev.sh`，LiveKit 1.13.11 二进制，`qwen-audio-3.1-realtime-flash`，2026-11-22） | 通过（修复下述问题后连续两轮全部检查通过；M3 的 `smoke_coach.py` 在 M4 代码下复跑也全部通过，开场白在"开始"cue 之前）。续接：Agent 加入时发 `coach.resume`（21 分钟、3.88 公里、3 个公里时刻），Agent 日志"workout resumed with 3 splits"，开场白"我在线了，继续陪你跑。目前用时 21 分，跑了 3.88 公里"，没有"开始"cue，约 40 秒后越过 4 公里收到 `coach.cue`（`split:4`），教练说"第 4 公里用时 5 分 34 秒…"，没有重报第 1–3 公里。骑行：首次开场白在先（"嘿，我是你的教练。路上骑车安全第一…"），随后"出发啦，先轻松骑，注意路况"；问"我现在骑得有多快"调用 `get_metrics`，答"现在每小时 25 公里"，没有说配速。第一轮发现开场白等 `coach.resume` 的 2 秒里"开始"cue 先放行，开场白的 `instructions=` 被 Qwen 忽略、重复了 cue；改为开场白先发、`CoachLoop` 后启动后修复 |
 | 2 核 4G 下的资源占用（`docker stats --no-stream`，`COACHW_AGENT_IDLE_PROCESSES=2`） | 通过（2026-11-22）。空闲时 agent 约 490 MB、api 约 50 MB、caddy 约 35 MB、livekit 约 40 MB；一路会话进行中 agent 约 490–510 MB、CPU 10–35%，整机已用约 1.2–1.4 GB / 3.6 GB，可用约 2.2 GB。日志里没有指标值、邀请码，也没有 DEBUG 行 |
 | LiveKit 生产配置（`deploy/livekit.yaml`，v1.13.11） | `use_external_ip: true` 在本机（中国内地网络）启动失败：STUN 解析公网 IP 超时。改为 `NODE_IP` 显式配置后正常启动，`bind_addresses: 127.0.0.1` 只限制 7880，7881/TCP 仍监听所有地址 |
 
@@ -616,10 +709,13 @@ docs/                文档
 - 韶音耳机 HFP 模式下的户外收音质量、风噪对 `server_vad` 的影响。
 - LiveKit Swift SDK 与后台音频、蓝牙路由切换的兼容性。
 - 4G/5G 移动网络下的端到端延迟。
+- M4 真机：手表定位权限弹窗与 `HKWorkoutRouteBuilder` 是否把路线存进 Apple 健康；锁屏 / 后台时 iPhone 能否用 `AVSpeechSynthesizer` 播报（依赖镜像会话保持 App 运行和音频会话可激活），与 LiveKit 音频会话的切换是否有冲突；`NWPathMonitor` 在蜂窝网络切换时的触发；服务端删房间（会话时长到）在 Swift SDK 里是否报 `roomDeleted`（据此不重连）。
+- `lk.transcription` 在 Qwen 插件下是否稳定给出教练的完整文字（运动记录里"教练说过的话"依赖它；本机冒烟的 Python 客户端能收到）。
+- M4 新档案的阈值与密度（散步 20 秒心率、骑行 45 秒心率 / 踏频 10% / 功率 15%、兜底 10 分钟节点）在真实运动中是否合适。
 
 ## 15. 未决问题
 
 - 用户手表与 iPhone 的系统版本（决定最低部署版本，当前暂定 iOS 18 / watchOS 11；本机 Xcode 27.2 的 SDK 为 iOS / watchOS 27.2）。
 - 服务器地域（香港 / 北京）与域名。
 - 音乐播放与教练说话的协调方式（压低 / 暂停 / 等间隙）。
-- 运动后记录存哪里（仅本机 / Apple 健康 / 服务端）。
+- ~~运动后记录存哪里~~：M4 定为完整 workout 与路线在 Apple 健康，指标摘要和教练说过的话在本机（11）；开放注册后再考虑同步到服务端（3.1）。

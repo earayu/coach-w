@@ -15,11 +15,18 @@ from typing import Any
 from coachw.coach.cue_queue import Cue, CueQueue, Release
 from coachw.coach.director import GOAL_KEY, Director
 from coachw.coach.events import EventEngine, RuleContext
-from coachw.coach.format import say_distance, say_duration
+from coachw.coach.format import say_distance, say_duration, speed_kmh
 from coachw.coach.metrics_state import MetricsState
 from coachw.profiles.base import ActivityProfile, Athlete
 from coachw.profiles.registry import profile_for
-from coachw.protocol import PROTOCOL_VERSION, CoachCue, CuePriority, MetricsFrame, WorkoutState
+from coachw.protocol import (
+    PROTOCOL_VERSION,
+    CoachCue,
+    CoachResume,
+    CuePriority,
+    MetricsFrame,
+    WorkoutState,
+)
 
 QUIET_MAX_MIN = 30
 
@@ -74,6 +81,7 @@ class CoachBrain:
         self.started_at = clock()
         self.alerts: dict[str, int] = {}
         self.profile_version = 0
+        self.resumed: CoachResume | None = None
 
     # -- input ---------------------------------------------------------------------------------
 
@@ -102,6 +110,43 @@ class CoachBrain:
         self.queue.quiet_until = quiet_until
         self.alerts = {}
         self.profile_version += 1
+
+    def resume(self, resume: CoachResume) -> bool:
+        """Carry on a workout an earlier session coached (spec 7.4). Returns whether it applied."""
+        if self.resumed is not None:
+            return False
+        if self.profile is None or resume.activity not in self.profile.activity_types:
+            if self.state.latest is not None:
+                # this session already follows another activity first-hand
+                return False
+            self._load(self._profiles(resume.activity))
+        if self.director is None:
+            return False
+        self.state.seed(
+            elapsed_s=resume.elapsed_s,
+            distance_m=resume.distance_m,
+            km_marks_s=resume.km_marks_s,
+            means=resume.means,
+            samples=resume.samples or 1,
+        )
+        self.director.resume(self.state, resume.elapsed_s)
+        self.resumed = resume
+        return True
+
+    def resume_greeting(self) -> str | None:
+        """Instead of the first-time greeting when the session joined a workout under way."""
+        resume = self.resumed
+        if resume is None or self.profile is None:
+            return None
+        parts = [f"已经用时 {say_duration(resume.elapsed_s)}"]
+        if resume.distance_m:
+            parts.append(f"完成 {say_distance(resume.distance_m)}")
+        state = "暂停中" if resume.state is WorkoutState.PAUSED else "进行中"
+        return (
+            f"【教练提示】语音刚刚连上，用户的{self.profile.label}{state}，{'，'.join(parts)}，"
+            "手表上的记录没有中断。用一句简短的话告诉用户你在线了、会继续陪着他，"
+            "可以带上这里的用时和距离，不要重新做自我介绍，不要补充其他数字。"
+        )
 
     # -- timing --------------------------------------------------------------------------------
 
@@ -162,7 +207,7 @@ class CoachBrain:
         if (d := self.state.distance_m) is not None:
             parts.append(f"已完成约 {say_distance(d)}")
         if self.state.splits:
-            parts.append(f"已完成 {len(self.state.splits)} 个{self.profile.split_label}分段")
+            parts.append(f"已完成第 {self.state.splits[-1].index} {self.profile.split_label}")
         if goals := self.profile.describe_targets(self.targets):
             parts.append(f"目标：{'，'.join(goals)}")
         if self.state.is_stale():
@@ -177,7 +222,22 @@ class CoachBrain:
         )
 
     def get_metrics(self) -> dict[str, Any]:
-        return self.state.snapshot()
+        out = self.state.snapshot()
+        if not out["available"] or self.profile is None:
+            return out
+        if not self.profile.speed_as_pace:
+            out.pop("pace_per_km", None)
+            if (speed := out.get("speed_mps")) is not None:
+                out["speed_kmh"] = round(speed_kmh(speed), 1)
+        # how the profile says each metric, so the model reads e.g. km/h on a bike
+        spoken = {
+            spec.label: text
+            for spec in self.profile.metrics
+            if (value := out.get(spec.field)) is not None and (text := spec.read(value))
+        }
+        if spoken:
+            out["spoken"] = spoken
+        return out
 
     def get_progress(self) -> dict[str, Any]:
         if self.profile is None:

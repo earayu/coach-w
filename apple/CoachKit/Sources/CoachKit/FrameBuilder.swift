@@ -14,6 +14,9 @@ public enum MetricReading: Sendable, Equatable {
     case groundContactTime(milliseconds: Double)
     case verticalOscillation(centimeters: Double)
     case activeEnergy(kilocalories: Double)
+    /// A GPS fix (docs/spec.md 11: never logged, never given to the model). Altitude is nil
+    /// when the fix has no valid vertical accuracy.
+    case location(latitude: Double, longitude: Double, altitudeMeters: Double?)
 }
 
 /// Merges readings as they arrive and emits throttled metrics frames.
@@ -49,6 +52,10 @@ public struct FrameBuilder: Sendable {
         case .verticalOscillation(let cm): latest.voCm = cm
         case .activeEnergy(let kcal): latest.energyKcal = kcal
         case .steps(let count): recordSteps(count, at: date)
+        case .location(let latitude, let longitude, let altitude):
+            latest.lat = latitude
+            latest.lon = longitude
+            if let altitude { latest.altM = altitude }
         }
     }
 

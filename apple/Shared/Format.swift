@@ -21,6 +21,11 @@ enum Format {
         return "\((meters / 1000).formatted(.number.precision(.fractionLength(2)))) km"
     }
 
+    static func speed(_ metersPerSecond: Double?) -> String {
+        guard let metersPerSecond else { return "\(dash) km/h" }
+        return "\((metersPerSecond * 3.6).formatted(.number.precision(.fractionLength(1)))) km/h"
+    }
+
     /// Minutes and seconds per kilometre, from speed in m/s.
     static func pace(_ metersPerSecond: Double?) -> String {
         guard let metersPerSecond, metersPerSecond > 0.3 else { return "\(dash) /km" }

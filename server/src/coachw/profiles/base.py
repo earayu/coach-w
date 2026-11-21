@@ -98,3 +98,15 @@ class ActivityProfile:
     describe_targets: Callable[[Mapping[str, float]], list[str]] = lambda _t: []
     tools: tuple[ProfileTool, ...] = ()
     baseline_s: tuple[float, float] = (300.0, 900.0)
+    start_hint: str = "简短地给用户打气，提醒先慢慢热身。"
+    """What the coach does with the start milestone."""
+    end_hint: str = "用一句话总结并夸奖用户，提醒放松拉伸。"
+    """What the coach does with the end-of-workout summary."""
+    speed_as_pace: bool = True
+    """Speed is read as pace per km (on foot); False reads it as km/h (on wheels)."""
+    time_mark_s: float | None = None
+    """A milestone every this much running time, for activities without distance splits."""
+    time_mark_facts: Callable[[float, float | None], str] = lambda elapsed_s, _kcal: (
+        f"已经运动 {elapsed_s / 60:.0f} 分钟。简短地鼓励用户。"
+    )
+    """Words a time mark from (running time, energy so far in kcal or None)."""
