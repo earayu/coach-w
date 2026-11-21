@@ -18,3 +18,10 @@ if command -v swift >/dev/null 2>&1; then
 else
   echo "==> apple/CoachKit: skipped (swift not found)"
 fi
+
+if command -v xcodegen >/dev/null 2>&1 && command -v xcodebuild >/dev/null 2>&1; then
+  echo "==> apple apps: simulator build"
+  "$root/scripts/build-apple.sh"
+else
+  echo "==> apple apps: skipped (needs xcodegen and xcodebuild)"
+fi

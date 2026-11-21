@@ -12,7 +12,15 @@ coach-w 是一个实时语音运动教练：Apple Watch 采集运动指标，iPh
 
 ## 当前状态
 
-M0 准备中，进度见 `docs/spec.md` 13.1。已有：文档、线协议 v1（`protocol/fixtures/`、`apple/CoachKit`、`server/src/coachw/protocol.py`）、CI。iOS / watchOS App 和服务端 Agent 尚未开始。
+M1 进行中，进度见 `docs/spec.md` 13.1–13.2。已有：文档、线协议 v1（`protocol/fixtures/`、`apple/CoachKit`、`server/src/coachw/protocol.py`）、CI；iOS + watchOS App 的数据通路（手表采集 → 镜像会话 → iPhone 显示），代码完成、尚未真机验收。服务端 Agent 尚未开始。
+
+代码地图：
+
+- `apple/Watch/WorkoutController.swift`：手表主 workout 会话、采集、发帧
+- `apple/Watch/HealthReadings.swift`：HealthKit 统计 → 线协议单位
+- `apple/iOS/MirrorReceiver.swift`：iPhone 接镜像会话、解帧、统计
+- `apple/Shared/WorkoutActivity.swift`：UI 可选运动与 HealthKit / 线协议的映射表、HealthKit 权限类型
+- `apple/CoachKit`：`MetricsFrame`（线协议）、`FrameBuilder`（合并读数、节流、推算步频）、`FrameStats`（收端统计）
 
 ## 不可违背的产品约束
 
@@ -89,6 +97,13 @@ uv run pytest
 # CoachKit
 cd apple/CoachKit
 swift test
+
+# iOS + watchOS App（需要 xcodegen）
+./scripts/build-apple.sh                 # 生成工程 + 模拟器构建，不签名
+./scripts/build-apple.sh device          # 真机签名构建（自动签名，团队 PX6VJ5XLCG）
+open apple/CoachW.xcodeproj              # 先跑过上面任一条生成工程
 ```
 
-需要 macOS + Xcode（Swift 6）和 uv。iOS / watchOS App 的构建命令在 M1 补充。
+需要 macOS + Xcode（Swift 6）、uv 和 XcodeGen。`apple/CoachW.xcodeproj` 由 `project.yml` 生成，不入库，改工程只改 `project.yml`。`apple/Watch/Info.plist` 和两个 `.entitlements` 也由 XcodeGen 生成，入库是为了审阅，改动以 `project.yml` 为准。
+
+HealthKit、镜像会话只能在真机上验证，模拟器构建通过不代表能用。

@@ -8,7 +8,7 @@ Wear an Apple Watch, carry an iPhone, put on your headphones (bone-conduction fi
 
 Running comes first, then cycling and walking (where it is more of a walking buddy than a coach). Every other Apple Watch workout type is covered by a generic profile.
 
-> Status: M0, preparing. Nothing runs yet. See [`docs/spec.md`](docs/spec.md).
+> Status: M1. The watch-to-iPhone data path is built but not yet verified on devices; no coach yet. See [`docs/spec.md`](docs/spec.md).
 
 ## How it works
 

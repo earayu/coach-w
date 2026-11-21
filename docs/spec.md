@@ -4,7 +4,7 @@
 |---|---|
 | 版本 | v0.1 |
 | 日期 | 2026-11-21 |
-| 状态 | 草案。M0 准备中（第 13 节）。 |
+| 状态 | 草案。M1 进行中（第 13 节）。 |
 
 这是 coach-w 最核心的文档。产品范围、领域模型、架构、技术选型都以本文为准；改动这些内容时先改本文，再改代码。
 
@@ -75,6 +75,29 @@ erDiagram
 | **Cue（提示）** | 准备说出口的一条话：来源事件、优先级、冷却键、过期时间、是否允许打断、是否同时震动。 |
 | **Coach Session（教练会话）** | 服务端一次 LiveKit 房间里的 Agent 会话，内部持有实时模型会话。可重建。 |
 | **Persona（人设）** | 教练的性格与语气（严厉 / 温和 / 毒舌）、声音、话多话少。 |
+
+### 3.1 用户与扩展
+
+目标是以后像 Keep 一样开放注册，但现在只有维护者和几个朋友用。原则：**留好接缝，不提前建系统。**
+
+**现在（M2 起，邀请制）：**
+
+- 每台 iPhone 首次启动生成一个 `athlete_id`（UUID，存 Keychain）。运动者资料（最大心率、心率区间、习惯配速）存在手机上，开始运动时随会话发给服务端。
+- token API 用**邀请码**换 LiveKit token：服务端环境变量里配一组邀请码，每个码对应一个人（名字和每日语音分钟上限）。不建数据库。
+- 服务端教练状态只在会话内存里，按 `athlete_id` 区分；日志只记 `athlete_id`，不记名字。
+- 每日语音分钟上限从第一天就有：实时语音模型按时长计费，朋友用也要防止意外超支。
+
+**必须守住的接缝：**
+
+- 服务端所有接口和会话都带 `athlete_id`，不出现"只有一个用户"的假设（全局单例状态、写死的个人参数）。
+- 运动者资料是会话的输入，不写死在提示词或代码里。
+- 邀请码校验集中在 token API 一处，以后整体换成正式登录。
+
+**以后（开放注册时）：**
+
+- 用 Sign in with Apple 换掉邀请码，服务端加账号表（届时再选数据库）。
+- 运动历史和教练记忆在用户同意后同步到服务端。
+- 按账号做配额和计费。
 
 ## 4. 教练如何工作
 
@@ -178,9 +201,12 @@ Qwen Realtime 的 function calling：`livekit-plugins-aliyun` 1.8.10 的源码�
 
 ### 6.2 手表 → iPhone
 
-- 首选 **HealthKit 镜像 workout 会话**（iOS 17 / watchOS 10 起）：iPhone 用 `startWatchApp(with:)` 拉起手表 App；手表 `startMirroringToCompanionDevice()`；iPhone 在 `workoutSessionMirroringStartHandler` 里接住会话；双方用 `sendToRemoteWorkoutSession(data:)` 双向传数据。镜像会话也让 iPhone App 在后台保持运行（待实测，14.2）。
+- 首选 **HealthKit 镜像 workout 会话**（iOS 17 / watchOS 10 起）：iPhone 用 `startWatchApp(toHandle:)` 拉起手表 App；手表 `startMirroringToCompanionDevice()`；iPhone 在 `workoutSessionMirroringStartHandler` 里接住会话；双方用 `sendToRemoteWorkoutSession(data:)` 双向传数据。镜像会话也让 iPhone App 在后台保持运行（待实测，14.2）。
 - 备选：`WatchConnectivity`。
-- 代码起点：Apple 示例 [Building a multidevice workout app](https://developer.apple.com/documentation/healthkit/building-a-multidevice-workout-app)（WWDC23 10023）。
+- 参考：Apple 示例 [Building a multidevice workout app](https://developer.apple.com/documentation/healthkit/building-a-multidevice-workout-app)（WWDC23 10023，MIT 许可）。M1 按它的结构重写，没有逐字复制文件。
+- 实现：手表 `apple/Watch/WorkoutController.swift`（主会话、采集、发帧），iPhone `apple/iOS/MirrorReceiver.swift`（接镜像会话、解帧、统计）。读数换算成线协议单位、节流（最多 1 帧/秒，状态变化立即发）、由步数推算步频都在 `CoachKit.FrameBuilder`，命令行可测。
+- 步频：HealthKit 的跑步数据没有直接的步频类型，步行类运动由累计步数在 15 秒窗口内推算；骑行用传感器的 `cyclingCadence`。
+- 手机端统计在 `CoachKit.FrameStats`：收到、丢失、乱序帧数，平均间隔，最近一帧的手机与手表时间差（包含时钟偏差）。界面上的"数据流"一节用来回答 14.2 的频率和后台问题。
 
 ### 6.3 线协议 v1
 
@@ -304,10 +330,11 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 
 ```text
 apple/
-  CoachKit/          SwiftPM 包：线协议、档案无关的纯逻辑，iOS 和 watchOS 共用
-  project.yml        XcodeGen 工程定义（M1）
-  iOS/               iPhone App（M1）
-  Watch/             watchOS App（M1）
+  CoachKit/          SwiftPM 包：线协议、FrameBuilder、FrameStats，iOS 和 watchOS 共用
+  project.yml        XcodeGen 工程定义（Bundle ID com.earayu.coachw，手表 .watchkitapp）
+  Shared/            两个 App 共用、依赖 HealthKit 的小文件（运动类型表、显示格式）
+  iOS/               iPhone App
+  Watch/             watchOS App
 server/
   src/coachw/
     protocol.py      线协议 v1
@@ -344,7 +371,7 @@ docs/                文档
 
 | 项目 | 许可 | 用法 |
 |---|---|---|
-| Apple 示例 multidevice workout | 以示例包内的 LICENSE 为准 | 复制作为 M1 工程骨架，保留其许可说明 |
+| Apple 示例 multidevice workout | MIT（示例包内 LICENSE.txt，Copyright 2025 Apple Inc.） | 学结构，M1 自己重写；以后逐字复制时把版权声明写进 `NOTICE` |
 | voicelab | 本人代码 | 迁移 Qwen 适配与 Agent 骨架 |
 | aarc | Apache-2.0 | 学设计；逐字移植文件时保留版权头并写入 `NOTICE` |
 | pace-pilot | 未声明 | 只学思路，不复制代码 |
@@ -368,7 +395,17 @@ docs/                文档
 | 仓库、许可、AGENTS.md、spec | 完成 |
 | 线协议 v1 + 两端解析测试 | 完成 |
 | CI | 完成 |
-| 准备清单（`docs/setup.md`） | 进行中 |
+| 准备清单（`docs/setup.md`） | 进行中：开发者账号、Bundle ID、iPhone 开发者模式已完成；手表开发者模式、服务器、域名未完成 |
+
+### 13.2 M1 进度
+
+| 项 | 状态 |
+|---|---|
+| XcodeGen 工程：iOS App 内嵌 watchOS App，HealthKit 能力 | 完成。模拟器构建通过；真机签名构建通过（2026-11-21，自动签名生成了两个 App 的开发描述文件，签名后的权限包含 HealthKit） |
+| 手表：主 workout 会话、镜像、采集、发帧，暂停/继续/结束，可在手表或 iPhone 上开始 | 代码完成，未上真机 |
+| iPhone：接镜像会话、实时指标、数据流统计、暂停/继续/结束 | 代码完成，未上真机 |
+| GPS 坐标（`lat`/`lon`/`alt_m`） | 未做。需要手表端定位权限和 `HKWorkoutRouteBuilder`，M1 真机通过后补 |
+| 真机验收：1 公里，iPhone 锁屏也持续收到 ≥1 Hz 心率和配速 | 待手表开发者模式 |
 
 ## 14. 验证记录
 
@@ -391,7 +428,7 @@ docs/                文档
 
 ## 15. 未决问题
 
-- 用户手表与 iPhone 的系统版本（决定最低部署版本，当前暂定 iOS 18 / watchOS 11）。
+- 用户手表与 iPhone 的系统版本（决定最低部署版本，当前暂定 iOS 18 / watchOS 11；本机 Xcode 27.2 的 SDK 为 iOS / watchOS 27.2）。
 - 服务器地域（香港 / 北京）与域名。
 - 音乐播放与教练说话的协调方式（压低 / 暂停 / 等间隙）。
 - 运动后记录存哪里（仅本机 / Apple 健康 / 服务端）。
