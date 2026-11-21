@@ -184,7 +184,7 @@ Qwen Realtime 的 function calling：`livekit-plugins-aliyun` 1.8.10 的源码�
 
 | 档案 | 优先级 | 指标 | 说明 |
 |---|---|---|---|
-| 跑步（室外 / 跑步机） | P0 | 心率、配速、距离、步频、功率、步幅、触地时间、垂直振幅、GPS、海拔 | Apple Watch SE（第二代）官方规格列出步幅、触地时间、垂直振幅；跑步功率待实测（14.2） |
+| 跑步（室外 / 跑步机） | P0 | 心率、配速、距离、步频、功率、步幅、触地时间、垂直振幅、GPS、海拔 | 维护者的手表是 Apple Watch Series 8（watchOS 26.6.1），支持跑步功率和跑姿指标；实际上报情况待实测（14.2） |
 | 散步 / 徒步 | P1 | 心率、配速、距离、步数、海拔 | 陪伴模式，最容易做好 |
 | 骑行（室外 / 室内） | P1 | 心率、速度、距离、海拔；踏频和功率需要蓝牙传感器 | 语音要短；路上安全优先 |
 | 通用兜底 | P1 | 心率、时长、卡路里 | 覆盖其余所有类型，陪伴模式 |
@@ -395,7 +395,7 @@ docs/                文档
 | 仓库、许可、AGENTS.md、spec | 完成 |
 | 线协议 v1 + 两端解析测试 | 完成 |
 | CI | 完成 |
-| 准备清单（`docs/setup.md`） | 进行中：开发者账号、Bundle ID、iPhone 开发者模式已完成；手表开发者模式、服务器、域名未完成 |
+| 准备清单（`docs/setup.md`） | 进行中：开发者账号、Bundle ID、iPhone 和手表的开发者模式已完成；服务器、域名未完成 |
 
 ### 13.2 M1 进度
 
@@ -405,7 +405,8 @@ docs/                文档
 | 手表：主 workout 会话、镜像、采集、发帧，暂停/继续/结束，可在手表或 iPhone 上开始 | 代码完成，未上真机 |
 | iPhone：接镜像会话、实时指标、数据流统计、暂停/继续/结束 | 代码完成，未上真机 |
 | GPS 坐标（`lat`/`lon`/`alt_m`） | 未做。需要手表端定位权限和 `HKWorkoutRouteBuilder`，M1 真机通过后补 |
-| 真机验收：1 公里，iPhone 锁屏也持续收到 ≥1 Hz 心率和配速 | 待手表开发者模式 |
+| 真机安装 | 完成（2026-11-21）：iPhone 16 Pro（iOS 27.2.1）和 Apple Watch Series 8（watchOS 26.6.1）都已装上，手表 App 能启动 |
+| 真机验收：1 公里，iPhone 锁屏也持续收到 ≥1 Hz 心率和配速 | 待维护者实测 |
 
 ## 14. 验证记录
 
@@ -413,11 +414,12 @@ docs/                文档
 
 | 项 | 结论 |
 |---|---|
+| 手表配对开发（watchOS 26.6.1 + iOS 27.2.1 + Xcode 27.2） | 通过（2026-11-21）。watchOS 26 不走 Device Hub 的 "Pair Nearby Device"（那是 watchOS 27 的流程），而是经由数据线连着的 iPhone 被 Mac 发现，需要在手表上点"信任"。信任后设置里仍没有开发者模式开关，直到 Mac 向手表安装一次开发签名 App（因开发者模式未开启而失败）后开关才出现。开启后首次安装报描述文件不含该设备，需用 `-allowProvisioningDeviceRegistration` 以手表为目标构建一次，注册手表 UDID |
 | LiveKit + Qwen Realtime（voicelab，浏览器端） | 通过（2026-11-09）。`server_vad` 打断约 0.5 秒；`smart_turn` 约 5 秒 |
 
 ### 14.2 仍待验证
 
-- Apple Watch SE（第二代）在 workout 中是否提供跑步功率。
+- Apple Watch Series 8 在 workout 中实际上报哪些跑步指标（功率、步幅、触地时间、垂直振幅）。
 - 镜像 workout 会话下，iPhone 锁屏后 App 是否持续运行并接收数据。
 - 指标帧实际频率（心率、配速的更新间隔）。
 - Qwen Realtime 经 `livekit-plugins-aliyun` 的 function calling 端到端是否可用。

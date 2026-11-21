@@ -18,8 +18,8 @@
 | 项 | 要求 | 状态 |
 |---|---|---|
 | iPhone 16 Pro | 开启开发者模式（设置 → 隐私与安全性 → 开发者模式） | [x] |
-| Apple Watch SE（第二代） | 与 iPhone 配对；开启开发者模式（手表上 设置 → 隐私与安全性 → 开发者模式，需先在 Xcode 中连接过） | [ ] |
-| 记录系统版本 | iOS ____ / watchOS ____（决定最低部署版本，见 spec 第 15 节） | [ ] |
+| Apple Watch Series 8（watchOS 26.6.1） | 与 iPhone 配对；开启开发者模式（见第 5 节的坑） | [x] |
+| 记录系统版本 | iOS 27.2.1 / watchOS 26.6.1 | [x] |
 | 韶音耳机 | 与 iPhone 配对 | [ ] |
 
 ## 3. 服务器与域名（M2 前）
@@ -48,7 +48,11 @@
 
 ## 5. 在真机上运行（M1 验收）
 
-1. iPhone 用数据线连 Mac，解锁并信任这台电脑；手表与 iPhone 配对、打开开发者模式（手表第一次被 Xcode 识别后，设置里才会出现开发者模式开关）。
+1. iPhone 用数据线连 Mac，解锁并信任这台电脑；手表与 iPhone 配对、打开开发者模式。watchOS 26 及更早：
+   - 手表经由连线的 iPhone 被 Mac 发现，手表上会弹"信任这台电脑"，要在约 3 分钟内点信任（手表需解锁）。`xcrun devicectl list devices` 里出现手表且为 `available (paired)` 即配对成功。
+   - 配对后设置里可能仍没有开发者模式。向手表装一次开发版 App 就会出现：`xcrun devicectl device install app --device <手表UDID> <CoachWWatch.app>`（会因未开启开发者模式失败，这是预期的）。
+   - watchOS 27 走 Device Hub（Xcode → Open Developer Tool → Device Hub → + → Pair Nearby Device…）。
+   - 新设备第一次安装若报"This provisioning profile cannot be installed on this device"，以该设备为目标带 `-allowProvisioningDeviceRegistration` 构建一次，注册设备 UDID。
 2. `./scripts/build-apple.sh device` 生成工程，再 `open apple/CoachW.xcodeproj`。
 3. Xcode 里选 scheme **CoachW**，目标选你的 iPhone，运行。手表 App 会随 iPhone App 安装；没自动装时，在 iPhone 的「Watch」App → 可用 App 里点安装，或在 Xcode 里选 scheme **CoachWWatch**、目标选手表直接运行。
 4. 首次打开时两边都会请求健康权限，全部允许。
