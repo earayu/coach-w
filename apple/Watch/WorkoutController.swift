@@ -21,6 +21,9 @@ final class WorkoutController: NSObject {
     @ObservationIgnored private var session: HKWorkoutSession?
     @ObservationIgnored private var builder: HKLiveWorkoutBuilder?
     @ObservationIgnored private var frames: FrameBuilder?
+    /// Sends a frame every second while running, so elapsed time stays fresh and a missing
+    /// stream means a broken link rather than "no new samples".
+    @ObservationIgnored private var heartbeat: Task<Void, Never>?
 
     func requestAuthorization() async {
         do {
@@ -50,7 +53,7 @@ final class WorkoutController: NSObject {
             self.session = session
             self.builder = builder
             self.activity = activity
-            frames = FrameBuilder(activity: activity.wireName)
+            frames = FrameBuilder(activity: activity.wireName, minInterval: 0.9)
             lastError = nil
 
             try await session.startMirroringToCompanionDevice()
@@ -68,7 +71,22 @@ final class WorkoutController: NSObject {
     func resume() { session?.resume() }
     func end() { session?.stopActivity(with: .now) }
 
+    private func updateHeartbeat() {
+        heartbeat?.cancel()
+        heartbeat = nil
+        guard state == .running else { return }
+        heartbeat = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled else { return }
+                self.ingest([], elapsed: self.builder?.elapsedTime ?? 0)
+            }
+        }
+    }
+
     private func reset() {
+        heartbeat?.cancel()
+        heartbeat = nil
         session = nil
         builder = nil
         frames = nil
@@ -101,6 +119,7 @@ final class WorkoutController: NSObject {
 
     private func handleStateChange(to newState: HKWorkoutSessionState, at date: Date) async {
         state = newState
+        updateHeartbeat()
         ingest([], elapsed: builder?.elapsedTime(at: date) ?? 0, force: true)
         switch newState {
         case .stopped:
