@@ -26,10 +26,10 @@
 
 | 项 | 要求 | 状态 |
 |---|---|---|
-| 云主机 | 2 核 4G 起，公网 IP；地域见 spec 第 10 节（未备案选香港） | [ ] |
-| 域名 | 一个子域名，如 `coach.example.com`，A 记录指向主机 | [ ] |
-| 安全组 | 放通 80/TCP、443/TCP、7881/TCP、50000–60000/UDP（已按 LiveKit 文档核对，见 spec 第 10 节和 `deploy/README.md`） | [ ] |
-| SSH 访问 | coding agent 部署用的 SSH 密钥 | [ ] |
+| 云主机 | 2 核 4G 起，公网 IP；地域见 spec 第 10 节（未备案选香港）。已用阿里云香港 2 核 4G、Ubuntu 24.04 | [x] |
+| 域名 | 一个子域名，如 `coach.example.com`，A 记录指向主机（Cloudflare 只做 DNS，不开代理） | [x] |
+| 安全组 | 放通 80/TCP、443/TCP、7881/TCP、50000–60000/UDP（已按 LiveKit 文档核对，见 spec 第 10 节和 `deploy/README.md`） | [x] |
+| SSH 访问 | coding agent 部署用的 SSH 密钥 | [x] |
 
 ## 4. 本机开发环境
 

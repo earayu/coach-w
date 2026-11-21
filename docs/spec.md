@@ -402,12 +402,15 @@ docs/                文档
 | 50000–60000/UDP | WebRTC 媒体（每个参与者用两个端口） | 是 |
 | 7880/TCP | LiveKit API / 信令，只绑 127.0.0.1，经 Caddy 访问 | 否 |
 | 8000/TCP | token API，只绑 127.0.0.1 | 否 |
+| 8081/TCP | Agent 健康检查，只绑 127.0.0.1 | 否 |
 | 3478/UDP、5349/TCP | 内置 TURN（UDP / TLS） | 暂不启用 |
 
 - TURN 暂不启用：服务器有公网 IP，UDP 不通时还有 7881/TCP。官方方案里 TURN/TLS 要占 443，需要第二个域名和 Caddy 的 layer4 模块；移动网络实测（14.2）有需要再加。
 - 对外通告的 IP 用 `NODE_IP` 显式配置，不用 `rtc.use_external_ip`：后者靠 Google STUN 发现公网 IP，本机（中国内地网络）实测超时，LiveKit 直接启动失败。
 - 本机开发不需要 Docker：`./scripts/dev.sh` 用 LiveKit 二进制（`scripts/install-livekit.sh` 从源码编译到 `.tools/`，或已在 PATH 上的 `livekit-server`）和 `deploy/livekit.dev.yaml`。
 - 密钥（LiveKit API secret、DashScope key）和邀请码只放服务器的 `deploy/.env`，不入库。
+- 容器日志用 json-file 并限制为每个容器 5 × 10 MB（Docker 默认不轮转）。
+- 当前生产：阿里云香港 2 核 4G（Ubuntu 24.04），2026-11-22 部署，实测见 14.1。
 
 ## 11. 隐私与密钥
 
@@ -445,7 +448,7 @@ docs/                文档
 | 仓库、许可、AGENTS.md、spec | 完成 |
 | 线协议 v1 + 两端解析测试 | 完成 |
 | CI | 完成 |
-| 准备清单（`docs/setup.md`） | 进行中：开发者账号、Bundle ID、iPhone 和手表的开发者模式已完成；服务器、域名未完成 |
+| 准备清单（`docs/setup.md`） | 进行中：开发者账号、Bundle ID、iPhone 和手表的开发者模式、服务器、域名、安全组、部署用 SSH 已完成；韶音耳机配对未完成 |
 
 ### 13.2 M1 进度
 
@@ -466,7 +469,7 @@ docs/                文档
 | Qwen 插件工具调用缺陷的绕行（4.7） | 完成，有单元测试 |
 | token API：邀请码、短期 token（限定房间、dispatch Agent）、每日分钟上限（内存、预占 + webhook 结算）、日志只记 `athlete_id` | 完成。本机实测：合法码 200、非法码 401、超额 429、webhook 结算、到上限被踢出 |
 | 本地一条命令起全套：`./scripts/dev.sh` | 完成 |
-| 部署：docker compose（Caddy、LiveKit、api、agent）、`.env.example`、`deploy/README.md`、端口核对 | 文件完成；Caddyfile 和 LiveKit 生产配置本机验证；镜像构建和 compose 校验在 CI。**未在真实服务器上部署**（服务器未购买） |
+| 部署：docker compose（Caddy、LiveKit、api、agent）、`.env.example`、`deploy/README.md`、端口核对 | 完成。已部署到阿里云香港 2 核 4G（2026-11-22）：证书、token API、webhook 不对外、公网端到端语音冒烟（UDP 与 7881/TCP 回退）通过（14.1）；镜像构建和 compose 校验也在 CI |
 | 单元测试：协议解析、邀请码、分钟账本、token 内容、API、Agent 指标与工具、provider | 完成（67 个） |
 | iOS 接入 LiveKit（语音模块、发 `coach.metrics`、拿 token，见 7.2.1） | 代码完成；真机签名构建、安装到 iPhone 和手表通过（2026-11-22）。手机连本机服务、开口对话尚未实测 |
 | 局域网开发模式 `./scripts/dev.sh --lan` | 完成：手机经局域网拿到 token（`server_url` 为 `ws://<局域网IP>:7880`） |
@@ -486,6 +489,9 @@ docs/                文档
 | `generate_reply(instructions=...)` 在 Qwen 插件下的语义（读源码 + 事件日志） | 会话里还没有用户消息时，指令作为一条合成的**用户**文字消息插入（Qwen 要求先有用户消息才能 `response.create`）；之后作为 system 消息插入。它们留在对话历史里 |
 | token API 与分钟上限（本机，经 `dev.sh`） | 通过（2026-11-21）。合法码 200、非法码 401、预占用完 429；加入 10 秒后离开，webhook 把预占结算为约 11 秒，下一次签发的上限据此计算；会话上限 60 秒时 Agent 在 60 秒说告别并删房间，客户端 67 秒被断开 |
 | Caddyfile 路由（本机 Caddy 2.11.9，域名 localhost） | 通过（2026-11-21）。`/v1/session` 到 API（200 / 401），其余到 LiveKit（`/` 返回 OK，`/rtc` 无效 token 返回 401），`/livekit/webhook` 不对外（404） |
+| 服务端上云部署（阿里云香港 `ecs.e-c1m2.large` 2 核 4G，Ubuntu 24.04.5，内核 6.8，Docker 29.10.0，Compose v5.8.0） | 通过（2026-11-22）。`docker compose up -d --build` 一次起来四个容器；Caddy 启动后约 8 秒拿到 Let's Encrypt 证书（颁发者 YE2，90 天）。LiveKit 以 `NODE_IP` 对外宣告，Agent 注册为 `coach-w` 并预热 2 个进程。从本机 Mac 经公网：`/` 返回 OK；`POST /v1/session` 合法码 200，`server_url` 为 `wss://<域名>`，非法码 401；`/livekit/webhook` 和 `/healthz` 返回 404；`:8081` 公网不可达。发现 Agent 健康检查默认监听所有网卡（安全组没放通，但仍改为只绑 127.0.0.1），Docker 日志默认不轮转（已加上限） |
+| 公网端到端语音冒烟（`smoke_voice.py --api https://<域名> --agent-log-cmd "ssh ... docker compose logs agent"`，客户端为本机 Mac，中国内地家庭宽带） | UDP 通过，TCP 回退链路通过但一项检查未过（2026-11-22）。UDP：连续 3 轮全部通过，ICE 选中 `udp` 到服务器 50000–60000 端口；每轮心率答 137、配速答每公里 5 分 32 秒、功率答没有数据，都先调用了 `get_metrics`。7881/TCP 回退（在服务器上用 iptables 临时丢弃本机来的 UDP）：ICE 选中 `tcp` 到 7881，开场白、心率、配速、功率回答都正确，但问配速那一轮模型没有再调用 `get_metrics`，直接复用了上一轮工具结果里的数字（`pace_tool_called` 未过；看起来与传输方式无关，见 14.2） |
+| 2 核 4G 下的资源占用（`docker stats --no-stream`，`COACHW_AGENT_IDLE_PROCESSES=2`） | 通过（2026-11-22）。空闲时 agent 约 490 MB、api 约 50 MB、caddy 约 35 MB、livekit 约 40 MB；一路会话进行中 agent 约 490–510 MB、CPU 10–35%，整机已用约 1.2–1.4 GB / 3.6 GB，可用约 2.2 GB。日志里没有指标值、邀请码，也没有 DEBUG 行 |
 | LiveKit 生产配置（`deploy/livekit.yaml`，v1.13.11） | `use_external_ip: true` 在本机（中国内地网络）启动失败：STUN 解析公网 IP 超时。改为 `NODE_IP` 显式配置后正常启动，`bind_addresses: 127.0.0.1` 只限制 7880，7881/TCP 仍监听所有地址 |
 
 ### 14.2 仍待验证
@@ -497,7 +503,9 @@ docs/                文档
 - LiveKit 自动音频会话在锁屏和韶音耳机（HFP）下的表现。
 - `generate_reply(instructions=...)` 在 Qwen 插件下的打断与排队行为（M3 的 cue 依赖它）。
 - 工具调用带来的额外回答延迟（冒烟只验证了正确性，没测延迟）。
-- 在真实服务器上 `docker compose up`：证书签发、公网 WebRTC（UDP 和 7881/TCP 回退）、webhook、容器内 Agent 进程预热与内存占用。本机没有 Docker，镜像只在 CI 构建过。
+- 同一会话里数值未变时，模型是否每次提问都重新调用 `get_metrics`（公网 TCP 冒烟里有一次直接复用了上一轮工具结果）。M3 指标随时变化，复用旧值会说错，需在提示词或工具结果的过期时间上约束。
+- 多路并发会话时 2 核 4G 的 CPU / 内存余量（只测了单路），以及 LiveKit Agents 生产默认 `load_threshold` 0.7 是否会让 worker 过早拒单。
+- 手机经公网连生产服务（iOS App 指向 `https://<域名>`）。
 - 移动网络下是否需要 TURN/TLS（第 10 节）。
 - token API 进程重启后当日用量清零的实际影响（只在几个人用时可以接受）。
 - 韶音耳机 HFP 模式下的户外收音质量、风噪对 `server_vad` 的影响。

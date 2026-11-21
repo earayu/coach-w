@@ -8,7 +8,7 @@ Wear an Apple Watch, carry an iPhone, put on your headphones (bone-conduction fi
 
 Running comes first, then cycling and walking (where it is more of a walking buddy than a coach). Every other Apple Watch workout type is covered by a generic profile.
 
-> Status: M1 data path built, awaiting on-device verification. M2 server side (coach agent, invite-only token API, deployment files) runs end to end on a local machine; not yet deployed, and the iPhone app does not talk to it yet. See [`docs/spec.md`](docs/spec.md).
+> Status: M1 data path built, awaiting on-device verification. M2 server side (coach agent, invite-only token API, deployment files) is deployed to a Hong Kong host and passes a public end-to-end voice smoke test; the iPhone app has the LiveKit voice code but has not yet talked to the server on a real device. See [`docs/spec.md`](docs/spec.md).
 
 ## How it works
 

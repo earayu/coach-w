@@ -3,11 +3,19 @@
 # Only Caddy (80/443), LiveKit RTC (7881/TCP, 50000-60000/UDP) are reachable from outside;
 # LiveKit signalling (7880) and the API (8000) listen on 127.0.0.1 behind Caddy.
 
+x-logging: &logging
+  # Docker's default json-file log never rotates; cap it so a small disk cannot fill up
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
 x-server: &server
   build: ../server
   image: coachw-server:local
   restart: unless-stopped
   network_mode: host
+  logging: *logging
   env_file: .env
   environment:
     LIVEKIT_URL: ws://127.0.0.1:7880
@@ -18,6 +26,7 @@ services:
     image: caddy:2.11.9
     restart: unless-stopped
     network_mode: host
+    logging: *logging
     environment:
       COACHW_DOMAIN: ${COACHW_DOMAIN:?set COACHW_DOMAIN in deploy/.env}
     volumes:
@@ -29,6 +38,7 @@ services:
     image: livekit/livekit-server:v1.13.11
     restart: unless-stopped
     network_mode: host
+    logging: *logging
     command: --config /etc/livekit.yaml
     environment:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?}: ${LIVEKIT_API_SECRET:?}"

@@ -12,7 +12,7 @@ coach-w 是一个实时语音运动教练：Apple Watch 采集运动指标，iPh
 
 ## 当前状态
 
-进度见 `docs/spec.md` 13.1–13.3。已有：文档、线协议 v1（`protocol/fixtures/`、`apple/CoachKit`、`server/src/coachw/protocol.py`）、CI；iOS + watchOS App 的数据通路（手表采集 → 镜像会话 → iPhone 显示），已在真机跑通，户外锁屏实测待做。M2 服务端（教练 Agent、token API、部署文件）在本机跑通，未部署到真实服务器；iOS 已接入 LiveKit（语音、转发指标），可用 `./scripts/dev.sh --lan` 在局域网内连本机服务。
+进度见 `docs/spec.md` 13.1–13.3。已有：文档、线协议 v1（`protocol/fixtures/`、`apple/CoachKit`、`server/src/coachw/protocol.py`）、CI；iOS + watchOS App 的数据通路（手表采集 → 镜像会话 → iPhone 显示），已在真机跑通，户外锁屏实测待做。M2 服务端（教练 Agent、token API、部署文件）已部署到阿里云香港 2 核 4G，公网端到端语音冒烟通过（部署与复测见 `deploy/README.md`）；iOS 已接入 LiveKit（语音、转发指标），可用 `./scripts/dev.sh --lan` 在局域网内连本机服务。
 
 代码地图：
 
