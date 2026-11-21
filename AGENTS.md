@@ -12,7 +12,7 @@ coach-w 是一个实时语音运动教练：Apple Watch 采集运动指标，iPh
 
 ## 当前状态
 
-进度见 `docs/spec.md` 13.1–13.3。已有：文档、线协议 v1（`protocol/fixtures/`、`apple/CoachKit`、`server/src/coachw/protocol.py`）、CI；iOS + watchOS App 的数据通路（手表采集 → 镜像会话 → iPhone 显示），代码完成、尚未真机验收。M2 服务端（教练 Agent、token API、部署文件）在本机跑通，未部署到真实服务器；iOS 尚未接入 LiveKit。
+进度见 `docs/spec.md` 13.1–13.3。已有：文档、线协议 v1（`protocol/fixtures/`、`apple/CoachKit`、`server/src/coachw/protocol.py`）、CI；iOS + watchOS App 的数据通路（手表采集 → 镜像会话 → iPhone 显示），已在真机跑通，户外锁屏实测待做。M2 服务端（教练 Agent、token API、部署文件）在本机跑通，未部署到真实服务器；iOS 已接入 LiveKit（语音、转发指标），可用 `./scripts/dev.sh --lan` 在局域网内连本机服务。
 
 代码地图：
 
@@ -20,6 +20,8 @@ coach-w 是一个实时语音运动教练：Apple Watch 采集运动指标，iPh
 - `apple/Watch/HealthReadings.swift`：HealthKit 统计 → 线协议单位
 - `apple/iOS/MirrorReceiver.swift`：iPhone 接镜像会话、解帧、统计
 - `apple/Shared/WorkoutActivity.swift`：UI 可选运动与 HealthKit / 线协议的映射表、HealthKit 权限类型
+- `apple/iOS/Voice/VoiceSession.swift`：唯一引用 LiveKit 的文件；连房间、开麦、把指标帧发到 `coach.metrics`。`TokenClient.swift`：调 token API
+- `apple/iOS/Settings/AppSettings.swift`：`athlete_id`、邀请码（钥匙串）、token API 地址
 - `apple/CoachKit`：`MetricsFrame`（线协议）、`FrameBuilder`（合并读数、节流、推算步频）、`FrameStats`（收端统计）
 - `server/src/coachw/session.py`：token API 与 Agent 的约定（Agent 名 `coach-w`、签进 token 的 `SessionMeta`）
 - `server/src/coachw/agent/worker.py`：Agent 入口、订阅 `coach.metrics`、会话时长上限；`coach.py`：系统提示词和 `get_metrics`；`metrics.py`：每会话最新帧和工具结果

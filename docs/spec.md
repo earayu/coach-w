@@ -282,7 +282,17 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 - `get_metrics` 返回最新一帧里有的指标、`age_s` 和换算好的 `pace_per_km`；超过 10 秒没有新帧时返回 `available: false`。坐标不给模型。缺省的指标不出现，不报 0。
 - 实时模型由 `coachw.providers.get_realtime_model(name)` 创建，`COACHW_PROVIDER` 默认 `qwen`；插件只在 `providers/` 里引用。
 - 同一主机预热的空闲进程数 `COACHW_AGENT_IDLE_PROCESSES`（默认 2；LiveKit 生产默认 8，2 核 4G 吃不消）；进程初始化超时放宽到 30 秒（负载高时默认 10 秒不够，实测会导致派单失败）。
-- 本机一条命令起全套：`./scripts/dev.sh`（LiveKit 二进制 + token API + Agent，日志在 `logs/`）。端到端冒烟：`server/tests/e2e/smoke_voice.py`，用 macOS `say` 提问，用合成指标帧，检查回答里的数字来自工具。
+- 本机一条命令起全套：`./scripts/dev.sh`（LiveKit 二进制 + token API + Agent，日志在 `logs/`）。`./scripts/dev.sh --lan` 让同一 Wi‑Fi 下的手机连这台 Mac：LiveKit 监听所有网卡并以 en0 地址对外宣告（`--node-ip`），token API 监听 `0.0.0.0`，发给手机的 `server_url` 是 `ws://<局域网IP>:7880`。端到端冒烟：`server/tests/e2e/smoke_voice.py`，用 macOS `say` 提问，用合成指标帧，检查回答里的数字来自工具。
+
+### 7.2.1 iOS 实现（M2）
+
+- 语音模块 `apple/iOS/Voice/`：`VoiceSession.swift` 是唯一引用 LiveKit Swift SDK（2.19.0，锁定版本）的文件；`TokenClient.swift` 调 `POST /v1/session`。
+- 身份与配置 `apple/iOS/Settings/AppSettings.swift`：`athlete_id` 首次启动生成，存钥匙串（锁屏后仍可读，`AfterFirstUnlock`）；邀请码存钥匙串；token API 地址存 UserDefaults，在 App 的"设置"里填。
+- 音频会话交给 LiveKit 的自动配置：开麦后是 `.playAndRecord`，选项含 `allowBluetoothHFP` 和 `allowBluetoothA2DP`（SDK 2.19.0 源码 `AudioSessionConfiguration.swift`）。Info.plist 开 `audio` 后台模式、麦克风说明、本地网络说明，ATS 只放开 `NSAllowsLocalNetworking`（开发时连局域网 http/ws）。
+- 指标转发：`MirrorReceiver.onFrames` 把镜像收到的每批帧（已带 `phone_ts`）交给 `VoiceSession.send`，以可靠模式发到 data channel 的 `coach.metrics`。语音没连上时不发、不缓存：教练只需要最新状态。
+- 开发构建（DEBUG）可在启动时用环境变量配置：`COACHW_API_BASE_URL`、`COACHW_INVITE_CODE`（写入设置并保存），`COACHW_AUTOCONNECT=1` 启动后自动连接，方便用 `xcrun devicectl device process launch --environment-variables` 免手输测试。正式构建不读这些变量。
+- 界面：首页顶部"语音教练"一节，显示连接状态、已发送指标帧数，按钮为连接教练 / 静音 / 结束语音；右上角"设置"填邀请码和服务器地址。
+- LiveKit 的 WebRTC 二进制包约 690 MB，从 GitHub Releases 下载，国内网络下 xcodebuild 自带的下载会超时。可先用 `curl -C -` 断点续传，再按 SwiftPM 的命名放进 `~/Library/Caches/org.swift.swiftpm/artifacts/`（见 `docs/setup.md`）。
 
 ### 7.3 音频与耳机
 
@@ -458,7 +468,8 @@ docs/                文档
 | 本地一条命令起全套：`./scripts/dev.sh` | 完成 |
 | 部署：docker compose（Caddy、LiveKit、api、agent）、`.env.example`、`deploy/README.md`、端口核对 | 文件完成；Caddyfile 和 LiveKit 生产配置本机验证；镜像构建和 compose 校验在 CI。**未在真实服务器上部署**（服务器未购买） |
 | 单元测试：协议解析、邀请码、分钟账本、token 内容、API、Agent 指标与工具、provider | 完成（67 个） |
-| iOS 接入 LiveKit（语音模块、发 `coach.metrics`、拿 token） | 未开始，下一个 issue |
+| iOS 接入 LiveKit（语音模块、发 `coach.metrics`、拿 token，见 7.2.1） | 代码完成；真机签名构建、安装到 iPhone 和手表通过（2026-11-22）。手机连本机服务、开口对话尚未实测 |
+| 局域网开发模式 `./scripts/dev.sh --lan` | 完成：手机经局域网拿到 token（`server_url` 为 `ws://<局域网IP>:7880`） |
 | 户外耳机对话（M2 完成标志） | 待 iOS 接入 |
 
 ## 14. 验证记录
@@ -482,6 +493,8 @@ docs/                文档
 - Apple Watch Series 8 在 workout 中实际上报哪些跑步指标（功率、步幅、触地时间、垂直振幅）。
 - 镜像 workout 会话下，iPhone 锁屏后 App 是否持续运行并接收数据。
 - 指标帧实际频率（心率、配速的更新间隔）。
+- iPhone 经局域网连本机服务：拿 token、进房间、教练开场白、开口对话、`coach.metrics` 转发后问心率答得对。
+- LiveKit 自动音频会话在锁屏和韶音耳机（HFP）下的表现。
 - `generate_reply(instructions=...)` 在 Qwen 插件下的打断与排队行为（M3 的 cue 依赖它）。
 - 工具调用带来的额外回答延迟（冒烟只验证了正确性，没测延迟）。
 - 在真实服务器上 `docker compose up`：证书签发、公网 WebRTC（UDP 和 7881/TCP 回退）、webhook、容器内 Agent 进程预热与内存占用。本机没有 Docker，镜像只在 CI 构建过。

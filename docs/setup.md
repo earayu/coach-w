@@ -60,3 +60,23 @@
 6. 验收：锁上 iPhone 跑 1 公里，解锁后看"数据流"：丢失帧数、平均间隔（期望 ≈1 s）。把结果和 iOS / watchOS 版本记到 `docs/spec.md` 14.1。
 
 - [ ] 确定最低部署版本（iOS / watchOS）。
+
+## 6. 在局域网里和教练对话（M2，不需要服务器）
+
+1. `.env` 里填好 `DASHSCOPE_API_KEY` 和 `COACHW_INVITES`（见 `.env.example`）。
+2. `./scripts/dev.sh --lan`：输出里的 Token API 地址形如 `http://192.168.x.x:8000`。手机和 Mac 必须连同一个 Wi‑Fi，Mac 防火墙要放行 7880、7881/TCP、7882/UDP、8000/TCP。
+3. iPhone 的 coach-w →右上角"设置"：邀请码填 `COACHW_INVITES` 里的 code，服务器地址填上一步的地址（不带 `/v1/session`）。第一次连接会弹"本地网络"和"麦克风"权限，都允许。
+4. 首页"语音教练"→"连接教练"，状态变成"已连接教练"后就可以说话。开始一次运动后，"已发送指标"会每秒增加，这时可以问"我现在心率多少"。
+
+### LiveKit 二进制包下载超时
+
+LiveKit Swift SDK 依赖约 690 MB 的 WebRTC 二进制包，xcodebuild 下载会在国内网络下超时（`downloadError("The request timed out.")`）。手动断点续传后放进 SwiftPM 缓存：
+
+```sh
+mkdir -p ~/Library/Caches/org.swift.swiftpm/artifacts && cd ~/Library/Caches/org.swift.swiftpm/artifacts
+u=https://github.com/livekit/webrtc-xcframework/releases/download/150.7871.04/LiveKitWebRTC.xcframework.zip
+until curl -fL -C - -o https___github_com_livekit_webrtc_xcframework_releases_download_150_7871_04_LiveKitWebRTC_xcframework_zip "$u"; do sleep 2; done
+```
+
+缓存文件名是 URL 里的 `:`、`/`、`.`、`-` 都换成 `_`。版本号以 `apple/project.yml` 锁定的 LiveKit 版本所依赖的 `webrtc-xcframework` 为准。
+

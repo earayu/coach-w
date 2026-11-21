@@ -3,11 +3,15 @@ import SwiftUI
 
 struct ContentView: View {
     let mirror: MirrorReceiver
+    let voice: VoiceSession
+    @Bindable var settings: AppSettings
     @State private var activity: WorkoutActivity = .running
+    @State private var showSettings = false
 
     var body: some View {
         NavigationStack {
             List {
+                VoiceSection(voice: voice, settings: settings, showSettings: $showSettings)
                 if mirror.isActive {
                     LiveSection(mirror: mirror)
                     StreamSection(stats: mirror.stats)
@@ -19,8 +23,15 @@ struct ContentView: View {
                 }
             }
             .navigationTitle(mirror.activity?.title ?? "coach-w")
+            .toolbar {
+                Button("设置", systemImage: "gearshape") { showSettings = true }
+            }
+            .sheet(isPresented: $showSettings) { SettingsView(settings: settings) }
         }
-        .task { await mirror.requestAuthorization() }
+        .task {
+            if settings.autoConnect, settings.isConfigured { await voice.start(settings: settings) }
+            await mirror.requestAuthorization()
+        }
     }
 
     private var startSection: some View {
@@ -37,6 +48,76 @@ struct ContentView: View {
             }
         } footer: {
             Text("手表负责采集和保存运动，这里实时显示手表发来的指标。")
+        }
+    }
+}
+
+private struct VoiceSection: View {
+    let voice: VoiceSession
+    let settings: AppSettings
+    @Binding var showSettings: Bool
+
+    var body: some View {
+        Section {
+            LabeledContent("教练", value: voice.status.title)
+            if voice.status == .connected {
+                Row("已发送指标", "\(voice.framesSent) 帧")
+            }
+            HStack {
+                if voice.isActive {
+                    Button(voice.isMuted ? "取消静音" : "静音",
+                           systemImage: voice.isMuted ? "mic.slash.fill" : "mic.fill") {
+                        Task { await voice.toggleMute() }
+                    }
+                    Spacer()
+                    Button("结束语音", systemImage: "phone.down.fill", role: .destructive) {
+                        Task { await voice.stop() }
+                    }
+                } else if settings.isConfigured {
+                    Button("连接教练", systemImage: "waveform") {
+                        Task { await voice.start(settings: settings) }
+                    }
+                } else {
+                    Button("先填写邀请码和服务器", systemImage: "gearshape") { showSettings = true }
+                }
+            }
+            .buttonStyle(.bordered)
+        } header: {
+            Text("语音教练")
+        }
+    }
+}
+
+private struct SettingsView: View {
+    @Bindable var settings: AppSettings
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("邀请码", text: $settings.inviteCode)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } footer: {
+                    Text("邀请码保存在钥匙串里。")
+                }
+                Section {
+                    TextField("http://192.168.1.10:8000", text: $settings.apiBaseURL)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("服务器地址")
+                } footer: {
+                    Text("开发时填 Mac 的局域网地址，正式服务器填 https 域名。")
+                }
+                Section("运动者 ID") {
+                    Text(settings.athleteID).font(.footnote.monospaced()).textSelection(.enabled)
+                }
+            }
+            .navigationTitle("设置")
+            .toolbar { Button("完成") { dismiss() } }
         }
     }
 }

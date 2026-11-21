@@ -31,7 +31,9 @@ ENV = {
 
 class Clock:
     def __init__(self) -> None:
-        self.now = time.time()
+        # Noon in Asia/Shanghai today, so adding minutes never crosses the quota day boundary
+        day = time.time() // 86400 * 86400
+        self.now = day + 4 * 3600
 
     def __call__(self) -> float:
         return self.now
@@ -91,7 +93,7 @@ def test_valid_invite_gets_scoped_token(client: TestClient, clock: Clock):
     assert "Alice" not in json.dumps(body) and "Alice" not in claims.metadata
 
     payload = json.loads(base64.urlsafe_b64decode(body["token"].split(".")[1] + "=="))
-    assert payload["exp"] - clock.now == pytest.approx(600, abs=2)
+    assert payload["exp"] - time.time() == pytest.approx(600, abs=2)  # signed with real time
 
 
 def test_every_session_gets_its_own_room(client: TestClient):

@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         MirrorReceiver.shared.install()
+        MirrorReceiver.shared.onFrames = { VoiceSession.shared.send($0) }
         return true
     }
 }
@@ -17,7 +18,7 @@ struct CoachWApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(mirror: .shared)
+            ContentView(mirror: .shared, voice: .shared, settings: .shared)
         }
     }
 }

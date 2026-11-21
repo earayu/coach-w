@@ -20,6 +20,8 @@ final class MirrorReceiver: NSObject {
     private(set) var lastError: String?
 
     @ObservationIgnored private var session: HKWorkoutSession?
+    /// Called with every batch of received frames, e.g. to forward them to the coach.
+    @ObservationIgnored var onFrames: (@MainActor ([MetricsFrame]) -> Void)?
 
     var isActive: Bool { state != .notStarted && state != .ended }
 
@@ -69,6 +71,7 @@ final class MirrorReceiver: NSObject {
             stats.record(frame)
             if frame.seq > latest?.seq ?? 0 { latest = frame }
         }
+        onFrames?(frames)
     }
 }
 

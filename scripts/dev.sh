@@ -22,6 +22,19 @@ if [[ -z "${DASHSCOPE_API_KEY:-${QWEN_API_KEY:-}}" ]]; then
 fi
 command -v uv >/dev/null || { echo "error: uv not found" >&2; exit 1; }
 
+# LAN mode: a phone on the same Wi-Fi talks to this Mac. `--lan` picks the en0 address,
+# or set COACHW_LAN_IP explicitly.
+if [[ "${1:-}" == "--lan" && -z "${COACHW_LAN_IP:-}" ]]; then
+  COACHW_LAN_IP="$(ipconfig getifaddr en0 || true)"
+  [[ -n "$COACHW_LAN_IP" ]] || { echo "error: no en0 address; set COACHW_LAN_IP" >&2; exit 1; }
+fi
+livekit_net=()
+if [[ -n "${COACHW_LAN_IP:-}" ]]; then
+  livekit_net=(--bind 0.0.0.0 --node-ip "$COACHW_LAN_IP")
+  export COACHW_API_HOST="${COACHW_API_HOST:-0.0.0.0}"
+  export LIVEKIT_PUBLIC_URL="ws://$COACHW_LAN_IP:7880"
+fi
+
 livekit_bin="${LIVEKIT_SERVER_BIN:-$(command -v livekit-server || true)}"
 if [[ -z "$livekit_bin" ]]; then
   livekit_bin="$root/.tools/bin/livekit-server"
@@ -52,7 +65,8 @@ py="$root/server/.venv/bin/python"
 
 echo "livekit → logs/livekit.log"
 LIVEKIT_KEYS="$LIVEKIT_API_KEY: $LIVEKIT_API_SECRET" LIVEKIT_WEBHOOK_API_KEY="$LIVEKIT_API_KEY" \
-  "$livekit_bin" --config "$root/deploy/livekit.dev.yaml" >"$logs/livekit.log" 2>&1 &
+  "$livekit_bin" --config "$root/deploy/livekit.dev.yaml" ${livekit_net[@]+"${livekit_net[@]}"} \
+  >"$logs/livekit.log" 2>&1 &
 pids+=($!)
 wait_for livekit "curl -fsS http://127.0.0.1:7880"
 
@@ -70,8 +84,8 @@ wait_for agent "grep -q 'registered worker' '$logs/agent.log'"
 cat <<EOF
 
 coach-w server is up:
-  LiveKit:   ${LIVEKIT_URL}
-  Token API: http://127.0.0.1:${COACHW_API_PORT:-8000}/v1/session
+  LiveKit:   ${LIVEKIT_PUBLIC_URL:-$LIVEKIT_URL}
+  Token API: http://${COACHW_LAN_IP:-127.0.0.1}:${COACHW_API_PORT:-8000}/v1/session
   Logs:      logs/{livekit,api,agent}.log
 Ctrl-C stops all services.
 EOF

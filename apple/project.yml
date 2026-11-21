@@ -22,6 +22,9 @@ settings:
 packages:
   CoachKit:
     path: CoachKit
+  LiveKit:
+    url: https://github.com/livekit/client-sdk-swift
+    exactVersion: 2.19.0
 
 targets:
   CoachW:
@@ -32,7 +35,19 @@ targets:
       - Shared
     dependencies:
       - package: CoachKit
+      - package: LiveKit
       - target: CoachWWatch
+    info:
+      path: iOS/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UIBackgroundModes:
+          - audio
+        NSMicrophoneUsageDescription: "coach-w uses the microphone so you can talk to your coach during a workout."
+        NSLocalNetworkUsageDescription: "coach-w connects to a coach server on your local network during development."
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     entitlements:
       path: iOS/CoachW.entitlements
       properties:
