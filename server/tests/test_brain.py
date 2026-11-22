@@ -254,3 +254,15 @@ def test_companion_chat_waits_its_interval_after_a_conversation():
     s.run.run(400, speed=slow)
     first = companions(s)[0]
     assert first.cue.created_at - talked_at >= s.brain.profile.cadence.companion_s
+
+
+def test_rejected_target_pace_changes_nothing():
+    s = Session()
+    s.run.run(1)
+    tool = s.brain.run_profile_tool
+    tool("adjust_target_pace", {"pace_min": 5, "pace_sec": 30, "goal_km": 10})
+    before = dict(s.brain.targets)
+    assert tool("adjust_target_pace", {"pace_min": 6, "pace_sec": 0, "goal_km": 500})["ok"] is False
+    assert tool("adjust_target_pace", {"pace_min": 0, "pace_sec": 0, "goal_km": -1})["ok"] is False
+    assert tool("adjust_target_pace", {"pace_min": 1, "pace_sec": -60})["ok"] is False
+    assert s.brain.targets == before
