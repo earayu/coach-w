@@ -26,3 +26,13 @@ private func frame(_ seq: Int, ts: Int64, phoneTs: Int64? = nil) -> MetricsFrame
     #expect(stats.missing == 0)
     #expect(stats.meanInterval == 1)
 }
+
+@Test func aRelaunchedWatchNumberingFromOneIsNotOutOfOrder() {
+    var stats = FrameStats()
+    stats.record(frame(40, ts: 40000))
+    stats.record(frame(1, ts: 45000))
+    stats.record(frame(2, ts: 46000))
+    #expect(stats.outOfOrder == 0)
+    #expect(stats.missing == 0)
+    #expect(stats.meanInterval == 3)
+}
