@@ -44,9 +44,24 @@ def clock() -> Clock:
     return Clock()
 
 
+class Coaches:
+    """Rooms that have a coach in them, as LiveKit would report."""
+
+    def __init__(self) -> None:
+        self.gone: set[str] = set()
+
+    async def __call__(self, room: str) -> bool:
+        return room not in self.gone
+
+
 @pytest.fixture
-def client(clock: Clock) -> TestClient:
-    return TestClient(create_app(ApiSettings.from_env(ENV), clock=clock))
+def coaches() -> Coaches:
+    return Coaches()
+
+
+@pytest.fixture
+def client(clock: Clock, coaches: Coaches) -> TestClient:
+    return TestClient(create_app(ApiSettings.from_env(ENV), clock=clock, has_coach=coaches))
 
 
 def start(client: TestClient, code: str = ALICE, athlete: str = ATHLETE):
@@ -103,6 +118,13 @@ def test_an_athlete_keeps_one_room_until_livekit_finishes_it(client: TestClient)
     assert start(client).json()["room"] == first  # a reconnect lands with the same coach
     assert start(client, athlete=other_athlete()).json()["room"] != first
     webhook(client, "room_finished", first, "")
+    second = start(client).json()["room"]
+    assert second != first
+
+
+def test_a_room_whose_coach_left_is_not_reused(client: TestClient, coaches: Coaches):
+    first = start(client).json()["room"]
+    coaches.gone.add(first)  # nobody would ever answer in it again
     assert start(client).json()["room"] != first
 
 

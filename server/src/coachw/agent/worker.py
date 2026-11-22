@@ -231,6 +231,9 @@ async def entrypoint(ctx: JobContext) -> None:
             topic=CUE_TOPIC,
         )
 
+    # A closed session never speaks again: leave the room instead of sitting in it silently, so
+    # the phone sees the coach go and the token API does not hand the room out again (COCH-15).
+    session.on("close", lambda ev: ctx.shutdown(f"agent session closed: {ev.reason}"))
     await session.start(room=ctx.room, agent=agent)
     farewell = cap_farewell(meta.max_session_s, session_max_s())
     cap = asyncio.create_task(end_when_cap_reached(ctx, session, meta.max_session_s, farewell))

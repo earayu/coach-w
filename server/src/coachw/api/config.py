@@ -12,6 +12,8 @@ from coachw.api.invites import InviteBook
 class ApiSettings:
     livekit_api_key: str
     livekit_api_secret: str
+    # LiveKit server API as seen from the token API, e.g. ws://127.0.0.1:7880
+    livekit_url: str
     # URL the phone connects to; in production wss://<domain> behind Caddy
     livekit_public_url: str
     invites: InviteBook
@@ -33,6 +35,7 @@ class ApiSettings:
         return cls(
             livekit_api_key=need("LIVEKIT_API_KEY"),
             livekit_api_secret=need("LIVEKIT_API_SECRET"),
+            livekit_url=need("LIVEKIT_URL"),
             livekit_public_url=env.get("LIVEKIT_PUBLIC_URL") or need("LIVEKIT_URL"),
             invites=invites,
             session_max_s=int(env.get("COACHW_SESSION_MAX_MINUTES", "60")) * 60,

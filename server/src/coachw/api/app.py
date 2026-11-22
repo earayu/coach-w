@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Request
@@ -33,8 +33,38 @@ class SessionResponse(BaseModel):
     max_session_s: int
 
 
-def create_app(settings: ApiSettings, clock: Callable[[], float] = time.time) -> FastAPI:
+CoachCheck = Callable[[str], Awaitable[bool]]
+
+
+def livekit_coach_check(settings: ApiSettings) -> CoachCheck:
+    """Whether a coach is in the room right now. A room whose coach has left (its session ended,
+    the agent restarted) gets no new one dispatched on rejoin: such a room is not reused."""
+
+    async def has_coach(room: str) -> bool:
+        lk = api.LiveKitAPI(
+            settings.livekit_url.replace("ws", "http", 1),
+            settings.livekit_api_key,
+            settings.livekit_api_secret,
+        )
+        try:
+            found = await lk.room.list_participants(api.ListParticipantsRequest(room=room))
+        except Exception as e:  # unknown room, LiveKit unreachable: start over in a new room
+            logger.info("room %s not reusable: %s", room, type(e).__name__)
+            return False
+        finally:
+            await lk.aclose()
+        return any(p.kind == api.ParticipantInfo.AGENT for p in found.participants)
+
+    return has_coach
+
+
+def create_app(
+    settings: ApiSettings,
+    clock: Callable[[], float] = time.time,
+    has_coach: CoachCheck | None = None,
+) -> FastAPI:
     app = FastAPI(title="coach-w token API", docs_url=None, redoc_url=None)
+    has_coach = has_coach or livekit_coach_check(settings)
     ledger = MinuteLedger(settings.quota_tz)
     # One room per athlete until LiveKit finishes it: a phone that reconnects (its own retry, a
     # fresh token) lands back with the same coach and conversation instead of a new one (COCH-15).
@@ -65,8 +95,10 @@ def create_app(settings: ApiSettings, clock: Callable[[], float] = time.time) ->
         ledger.supersede(invite.code, athlete_id)
         remaining = invite.daily_minutes * 60 - ledger.used_s(invite.code, now)
         room = rooms.get(key)
-        reused = room is not None and ledger.reuse(
-            room, invite.code, athlete_id, now, settings.token_ttl_s
+        reused = (
+            room is not None
+            and await has_coach(room)
+            and ledger.reuse(room, invite.code, athlete_id, now, settings.token_ttl_s)
         )
         if not reused and remaining < settings.min_session_s:
             logger.info("rejected: daily minutes used up athlete_id=%s", athlete_id)
