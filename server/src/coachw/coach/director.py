@@ -231,6 +231,11 @@ class Director:
 
     # -- companion -----------------------------------------------------------------------------
 
+    def companion_spoken(self) -> None:
+        """The companion cue was released: the next one takes the next topic. Offers the queue
+        held back or dropped (user speaking, expired) do not use a topic up."""
+        self._topic += 1
+
     def companion_interval_s(self, since_alert_s: float) -> float:
         c = self.profile.cadence
         stable = since_alert_s >= c.stable_after_s
@@ -243,7 +248,6 @@ class Director:
         if not topics or since_spoken_s < self.companion_interval_s(since_alert_s):
             return []
         topic = topics[self._topic % len(topics)]
-        self._topic += 1
         return [
             CoachEvent(
                 kind="companion",

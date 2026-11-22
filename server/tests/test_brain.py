@@ -237,3 +237,20 @@ def test_end_milestone_on_workout_end():
     s.run.run(3, state=WorkoutState.ENDED)
     assert s.kinds()[-1] == "end"
     assert s.deliveries[-1].watch.haptic is Haptic.STOP
+
+
+def companions(s):
+    return [d for d in s.deliveries if d.cue.priority is CuePriority.COMPANION]
+
+
+def test_companion_chat_waits_its_interval_after_a_conversation():
+    s = Session()
+    slow = 1.5  # splits far apart, so only companion chat fills the gaps
+    s.run.run(200, speed=slow)
+    s.user_speaking = True  # the athlete and the coach chat for a while
+    s.run.run(30, speed=slow)
+    s.user_speaking = False
+    talked_at = s.clock.now
+    s.run.run(400, speed=slow)
+    first = companions(s)[0]
+    assert first.cue.created_at - talked_at >= s.brain.profile.cadence.companion_s

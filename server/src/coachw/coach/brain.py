@@ -79,6 +79,7 @@ class CoachBrain:
         self.engine: EventEngine | None = None
         self.queue = CueQueue(max_per_minute=3, min_gap_s=10)
         self.started_at = clock()
+        self.last_talk_at: float | None = None
         self.alerts: dict[str, int] = {}
         self.profile_version = 0
         self.resumed: CoachResume | None = None
@@ -155,8 +156,13 @@ class CoachBrain:
         if self.profile is None or self.director is None or self.engine is None:
             return None
         now = self._clock()
+        if user_speaking or agent_speaking:
+            # a conversation counts as talk: companion chat waits its interval after it too
+            self.last_talk_at = now
         ctx = RuleContext(self.state, self.targets)
-        since_spoken = now - (self.queue.last_spoken_at or self.started_at)
+        since_spoken = now - max(
+            self.queue.last_spoken_at or self.started_at, self.last_talk_at or self.started_at
+        )
         since_alert = now - (self.queue.last_alert_at or self.started_at)
         events = self.engine.evaluate(ctx) + self.director.evaluate(
             self.state, self.targets, since_spoken_s=since_spoken, since_alert_s=since_alert
@@ -164,7 +170,11 @@ class CoachBrain:
         for event in events:
             self.queue.offer(event, now)
         release = self.queue.next(now, user_speaking=user_speaking, agent_speaking=agent_speaking)
-        return self._deliver(release) if release else None
+        if release is None:
+            return None
+        if release.cue.priority is CuePriority.COMPANION:
+            self.director.companion_spoken()
+        return self._deliver(release)
 
     def _deliver(self, release: Release) -> Delivery:
         cue = release.cue
