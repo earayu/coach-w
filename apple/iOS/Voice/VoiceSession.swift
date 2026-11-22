@@ -49,6 +49,8 @@ final class VoiceSession: NSObject {
     private(set) var status: Status = .idle
     private(set) var isMuted = false
     private(set) var isCoachSpeaking = false
+    /// LiveKit hears the user's microphone right now: shows the user the coach can hear them.
+    private(set) var isUserSpeaking = false
     private(set) var framesSent = 0
     private(set) var cuesReceived = 0
     private(set) var reconnects = 0
@@ -59,6 +61,8 @@ final class VoiceSession: NSObject {
     @ObservationIgnored var onCoachLine: (@MainActor (String) -> Void)?
     /// Called once each time an established link drops and offline fallback takes over.
     @ObservationIgnored var onLinkLost: (@MainActor () -> Void)?
+    /// Called each time a session is connected and its microphone is live.
+    @ObservationIgnored var onConnected: (@MainActor () -> Void)?
     /// The workout so far, for a session that joins mid-workout; nil when there is none.
     @ObservationIgnored var resumeProvider: (@MainActor () -> CoachResume?)?
 
@@ -92,6 +96,7 @@ final class VoiceSession: NSObject {
         retryAttempt = 0
         isMuted = false
         isCoachSpeaking = false
+        isUserSpeaking = false
         startPathMonitor()
         await connect()
     }
@@ -106,6 +111,7 @@ final class VoiceSession: NSObject {
         sendTail?.cancel()
         sendTail = nil
         isCoachSpeaking = false
+        isUserSpeaking = false
         status = .idle
         await room?.disconnect()
     }
@@ -173,6 +179,7 @@ final class VoiceSession: NSObject {
             if retryAttempt > 0 { reconnects += 1 }
             retryAttempt = 0
             status = .connected
+            onConnected?()
             log.info("joined room \(grant.room, privacy: .public)")
             // an agent that is already here gets the workout now; one that joins later on arrival
             if room.remoteParticipants.values.contains(where: { $0.kind == .agent }) { await sendResume() }
@@ -206,6 +213,7 @@ final class VoiceSession: NSObject {
         retryTask = nil
         stopPathMonitor()
         isCoachSpeaking = false
+        isUserSpeaking = false
         status = .failed(message)
     }
 
@@ -215,6 +223,7 @@ final class VoiceSession: NSObject {
         sendTail?.cancel()
         sendTail = nil
         isCoachSpeaking = false
+        isUserSpeaking = false
         // the server closed the session on purpose (time cap, removed): do not start a new one
         if let type = error?.type, [.roomDeleted, .participantRemoved, .duplicateIdentity].contains(type) {
             giveUp("教练会话已结束")
@@ -340,9 +349,11 @@ extension VoiceSession: RoomDelegate {
     nonisolated func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
         let id = ObjectIdentifier(room)
         let speaking = participants.contains { $0.kind == .agent }
+        let userSpeaking = participants.contains { $0 is LocalParticipant }
         Task { @MainActor in
             guard self.isCurrent(id) else { return }
             self.isCoachSpeaking = speaking
+            self.isUserSpeaking = userSpeaking
         }
     }
 

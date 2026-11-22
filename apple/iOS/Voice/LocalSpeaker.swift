@@ -28,6 +28,13 @@ final class LocalSpeaker: NSObject, AVSpeechSynthesizerDelegate {
         synthesizer.speak(utterance)
     }
 
+    /// The voice coach is back and LiveKit owns the audio session now: stop talking over it, and
+    /// never deactivate the session it is using when this speech would have finished.
+    func yieldToVoiceCoach() {
+        ownsSession = false
+        if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
+    }
+
     private func activateSession() {
         let session = AVAudioSession.sharedInstance()
         // While LiveKit still holds a voice session (e.g. reconnecting) its category stays: speak

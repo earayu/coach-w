@@ -21,9 +21,12 @@ struct VoiceVisualState: Equatable {
     let framesSent: Int
     let cuesReceived: Int
     let reconnects: Int
+    /// The microphone is picking the user up: proof the coach can hear them.
+    let isUserSpeaking: Bool
 
     @MainActor
     init(voice: VoiceSession) {
+        self.isUserSpeaking = voice.status == .connected && !voice.isMuted && voice.isUserSpeaking
         self.isActive = voice.isActive
         self.isConnected = voice.status == .connected
         self.isMuted = voice.isMuted
@@ -62,8 +65,10 @@ struct VoiceVisualState: Equatable {
         needsLocalFallback: Bool,
         framesSent: Int,
         cuesReceived: Int,
-        reconnects: Int
+        reconnects: Int,
+        isUserSpeaking: Bool = false
     ) {
+        self.isUserSpeaking = isUserSpeaking
         self.mode = mode
         self.isActive = isActive
         self.isConnected = isConnected

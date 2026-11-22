@@ -32,6 +32,7 @@ struct WorkoutDashboardView: View {
         ScrollView {
             VStack(spacing: 14) {
                 voiceStatusBar
+                staleStreamBanner
                 heroCard
                 heartRateCard
                 secondaryMetricsGrid
@@ -131,10 +132,40 @@ struct WorkoutDashboardView: View {
         if voice.needsLocalFallback {
             return "本机自动播报关键节点 · 手表照常震动"
         }
+        if voice.isUserSpeaking {
+            return "听到你在说话…"
+        }
         if voice.isConnected {
             return "已发送 \(voice.framesSent) 帧 · 手表提醒 \(voice.cuesReceived) 条"
         }
         return isConfigured ? "随时可连线实时语音教练" : "未配置服务器与邀请码"
+    }
+
+    // MARK: - Stalled Watch Stream
+
+    /// Shown when the workout runs but the watch has stopped sending frames: the numbers on screen
+    /// are old, and the coach does not get new ones either.
+    private var staleStreamBanner: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            if isRunning, let frame, frame.isStale(at: context.date) {
+                HStack(spacing: 10) {
+                    Image(systemName: "applewatch.slash")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(PulseTheme.amber)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("手表数据已中断 \(Int(frame.silence(at: context.date) ?? 0)) 秒")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(PulseTheme.textPrimary)
+                        Text("心率、距离停在最后一次收到的值。抬腕打开手表上的 coach-w 可恢复。")
+                            .font(.caption2)
+                            .foregroundStyle(PulseTheme.textSecondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(12)
+                .background(PulseTheme.amber.opacity(0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+        }
     }
 
     // MARK: - Core Hero Card
@@ -186,12 +217,15 @@ struct WorkoutDashboardView: View {
             .padding(.vertical, 4)
 
             HStack(spacing: 0) {
-                heroSubMetric(
-                    title: "时长",
-                    value: Format.duration(frame?.elapsedS),
-                    unit: nil,
-                    hasValue: frame != nil
-                )
+                // ticks on the phone between frames, so the clock never freezes on a stalled stream
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    heroSubMetric(
+                        title: "时长",
+                        value: Format.duration(isRunning ? frame?.elapsed(at: context.date) : frame?.elapsedS),
+                        unit: nil,
+                        hasValue: frame != nil
+                    )
+                }
                 Rectangle()
                     .fill(PulseTheme.surfaceStroke)
                     .frame(width: 1, height: 38)

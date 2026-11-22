@@ -91,7 +91,7 @@ final class MirrorReceiver: NSObject {
     private func receive(_ frames: [MetricsFrame]) {
         for frame in frames {
             stats.record(frame)
-            if frame.seq > latest?.seq ?? 0 { latest = frame }
+            if frame.isNewer(than: latest) { latest = frame }
         }
         onFrames?(frames)
     }
