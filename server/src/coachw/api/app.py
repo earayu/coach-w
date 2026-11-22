@@ -56,6 +56,7 @@ def create_app(settings: ApiSettings, clock: Callable[[], float] = time.time) ->
             raise HTTPException(401, "unknown invite code")
 
         now = clock()
+        ledger.supersede(invite.code, athlete_id)
         remaining = invite.daily_minutes * 60 - ledger.used_s(invite.code, now)
         if remaining < settings.min_session_s:
             logger.info("rejected: daily minutes used up athlete_id=%s", athlete_id)
