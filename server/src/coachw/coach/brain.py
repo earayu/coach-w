@@ -220,7 +220,7 @@ class CoachBrain:
             parts.append(f"已完成第 {self.state.splits[-1].index} {self.profile.split_label}")
         if goals := self.profile.describe_targets(self.targets):
             parts.append(f"目标：{'，'.join(goals)}")
-        if self.state.is_stale():
+        if self.state.is_stale() and self.state.is_running:
             parts.append("手表数据暂时中断")
         now = self._clock()
         if self.queue.is_quiet(now):

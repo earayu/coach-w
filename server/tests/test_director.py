@@ -142,3 +142,13 @@ def test_companion_topic_moves_on_only_once_spoken():
     h.director.companion_spoken()
     h.tick()
     assert RUNNING.companion_topics[1] in h.events[-1].facts
+
+
+def test_a_paused_watch_going_quiet_is_not_data_loss():
+    # the watch sends no heartbeat while paused: silence then is the pause, not a broken link
+    h = Harness()
+    h.run.run(60)
+    h.run.run(1, state=WorkoutState.PAUSED)
+    h.clock.advance(120)
+    h.tick()
+    assert "data_lost" not in h.kinds

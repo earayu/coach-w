@@ -84,7 +84,8 @@ class Director:
         if frame.state is WorkoutState.ENDED:
             return self._once("end", self._end_facts(state), Haptic.STOP, "运动结束")
         if state.is_stale():
-            if state.started and (state.age_s() or 0) >= DATA_LOST_AFTER_S:
+            # a paused watch sends no heartbeat: only a running workout going quiet is a lost link
+            if state.started and state.is_running and (state.age_s() or 0) >= DATA_LOST_AFTER_S:
                 return self._once(
                     "data_lost",
                     "已经有一会儿收不到手表的数据了。提醒用户看一下手表上的运动是否还在进行，"
