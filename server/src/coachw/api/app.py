@@ -44,8 +44,10 @@ def create_app(settings: ApiSettings, clock: Callable[[], float] = time.time) ->
     def healthz() -> dict:
         return {"ok": True}
 
+    # async on purpose: FastAPI runs plain `def` handlers in a thread pool, where parallel requests
+    # and the webhook would read and replace the ledger at the same time. Nothing here blocks.
     @app.post("/v1/session")
-    def create_session(req: SessionRequest) -> SessionResponse:
+    async def create_session(req: SessionRequest) -> SessionResponse:
         try:
             athlete_id = parse_athlete_id(req.athlete_id)
         except ValueError:
