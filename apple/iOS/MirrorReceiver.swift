@@ -20,6 +20,8 @@ final class MirrorReceiver: NSObject {
     private(set) var lastError: String?
 
     @ObservationIgnored private var session: HKWorkoutSession?
+    /// Start of the workout being shown: a re-attached session with the same start continues it.
+    @ObservationIgnored private var sessionStart: Date?
     /// Called with every batch of received frames, e.g. to forward them to the coach.
     @ObservationIgnored var onFrames: (@MainActor ([MetricsFrame]) -> Void)?
     /// Called when a workout session from the watch attaches, and when it ends.
@@ -118,19 +120,27 @@ final class MirrorReceiver: NSObject {
     }
 
     private func attach(_ mirrored: HKWorkoutSession) {
-        log.info("mirrored session attached, state \(mirrored.state.rawValue, privacy: .public)")
+        // HealthKit hands over a new session for the same workout after the watch link drops and
+        // comes back (measured on device 2026-11-22: ~15 s later). That is not a new workout: keep
+        // its record and numbers going.
+        let continuing = isActive && sessionStart != nil && mirrored.startDate == sessionStart
+        log.info(
+            "mirrored session attached, state \(mirrored.state.rawValue, privacy: .public), continuing \(continuing, privacy: .public)"
+        )
         session = mirrored
         mirrored.delegate = self
         state = mirrored.state
+        lastError = nil
+        guard !continuing else { return }
+        sessionStart = mirrored.startDate
         activity = WorkoutActivity(healthKitType: mirrored.workoutConfiguration.activityType)
         latest = nil
         stats = FrameStats()
-        lastError = nil
         if let activity { onSessionStarted?(activity) }
     }
 
     private func receive(_ frames: [MetricsFrame]) {
-        if let latest, let silence = latest.silence(at: .now), silence > MetricsFrame.staleAfter {
+        if let latest, latest.isStale(at: .now), let silence = latest.silence(at: .now) {
             log.info("frames resumed after \(Int(silence), privacy: .public)s of silence")
         }
         if latest == nil { log.info("first frame received") }
@@ -139,6 +149,21 @@ final class MirrorReceiver: NSObject {
             if frame.isNewer(than: latest) { latest = frame }
         }
         onFrames?(frames)
+        if let latest { follow(latest.state) }
+    }
+
+    /// The watch's own state, from its newest frame. The mirrored session's state callbacks do not
+    /// always arrive (on device, a pause from the phone paused the watch but the phone never heard
+    /// of it), which left the pause button and "end" looking dead (COCH-12).
+    private func follow(_ watchState: WorkoutState) {
+        switch watchState {
+        case .running where state == .paused: state = .running
+        case .paused where state == .running: state = .paused
+        case .ended where isActive:
+            log.info("watch reports the workout ended")
+            close(error: nil)
+        default: break
+        }
     }
 }
 
