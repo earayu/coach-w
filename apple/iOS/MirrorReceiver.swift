@@ -72,12 +72,53 @@ final class MirrorReceiver: NSObject {
         }
     }
 
-    func pause() { session?.pause() }
-    func resume() { session?.resume() }
-    func end() { session?.stopActivity(with: .now) }
+    /// How long the watch gets to confirm an end before the phone closes the workout on its own.
+    static let endTimeout: Duration = .seconds(5)
+
+    func pause() {
+        log.info("pause requested, state \(self.state.rawValue, privacy: .public)")
+        guard let session else { return lostWatch() }
+        session.pause()
+    }
+
+    func resume() {
+        log.info("resume requested, state \(self.state.rawValue, privacy: .public)")
+        guard let session else { return lostWatch() }
+        session.resume()
+    }
+
+    private func lostWatch() {
+        lastError = "手表已断开，暂停和继续请在手表上操作；点「结束」可在手机上结束本次记录。"
+    }
+
+    /// Asks the watch to end the workout. A watch that has gone away never answers, which left the
+    /// phone stuck on the dashboard (COCH-12): then the phone closes the workout itself. The watch
+    /// still owns and saves the HealthKit workout.
+    func end() {
+        log.info("end requested, state \(self.state.rawValue, privacy: .public)")
+        guard let session else {
+            close(error: "手表已断开，已在手机上结束本次记录。手表上的运动请在手表上结束。")
+            return
+        }
+        session.stopActivity(with: .now)
+        Task { [weak self] in
+            try? await Task.sleep(for: Self.endTimeout)
+            guard let self, self.session === session, self.state != .ended else { return }
+            log.error("watch did not confirm the end; closing the workout on the phone")
+            self.close(error: "手表没有响应，已在手机上结束。手表上的运动请在手表上结束。")
+        }
+    }
+
+    private func close(error: String?) {
+        session?.delegate = nil
+        session = nil
+        state = .ended
+        lastError = error
+        onSessionEnded?()
+    }
 
     private func attach(_ mirrored: HKWorkoutSession) {
-        log.info("mirrored session attached")
+        log.info("mirrored session attached, state \(mirrored.state.rawValue, privacy: .public)")
         session = mirrored
         mirrored.delegate = self
         state = mirrored.state
@@ -89,6 +130,10 @@ final class MirrorReceiver: NSObject {
     }
 
     private func receive(_ frames: [MetricsFrame]) {
+        if let latest, let silence = latest.silence(at: .now), silence > MetricsFrame.staleAfter {
+            log.info("frames resumed after \(Int(silence), privacy: .public)s of silence")
+        }
+        if latest == nil { log.info("first frame received") }
         for frame in frames {
             stats.record(frame)
             if frame.isNewer(than: latest) { latest = frame }
@@ -104,7 +149,9 @@ extension MirrorReceiver: HKWorkoutSessionDelegate {
         from fromState: HKWorkoutSessionState,
         date: Date
     ) {
+        log.info("mirrored state \(fromState.rawValue, privacy: .public) -> \(toState.rawValue, privacy: .public)")
         Task { @MainActor in
+            guard self.session === workoutSession else { return }
             self.state = toState
             if toState == .ended {
                 self.session = nil
@@ -115,16 +162,27 @@ extension MirrorReceiver: HKWorkoutSessionDelegate {
 
     nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
         let message = error.localizedDescription
-        log.error("mirrored session failed: \(message)")
+        log.error("mirrored session failed: \(Self.describe(error), privacy: .public)")
         Task { @MainActor in self.lastError = message }
     }
 
     nonisolated func workoutSession(
         _ workoutSession: HKWorkoutSession, didDisconnectFromRemoteDeviceWithError error: Error?
     ) {
+        log.error("mirrored session disconnected: \(error.map(Self.describe) ?? "no error", privacy: .public)")
+        // This session will not answer pause or end any more. Keep the dashboard (the watch may
+        // mirror again, which hands over a new session), but let "end" close it on the phone.
         let message = error?.localizedDescription ?? "unknown"
-        log.error("mirrored session disconnected: \(message)")
-        Task { @MainActor in self.lastError = "与手表断开：\(message)" }
+        Task { @MainActor in
+            guard self.session === workoutSession else { return }
+            self.session = nil
+            self.lastError = "与手表断开：\(message)"
+        }
+    }
+
+    private nonisolated static func describe(_ error: Error) -> String {
+        let ns = error as NSError
+        return "\(ns.domain) \(ns.code) \(ns.localizedDescription)"
     }
 
     /// While the app is suspended HealthKit buffers frames and delivers them together on resume.
