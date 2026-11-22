@@ -181,10 +181,11 @@ async def entrypoint(ctx: JobContext) -> None:
     inbox.attach(brain, participant.identity)
 
     session = AgentSession(llm=get_realtime_model(os.environ.get("COACHW_PROVIDER", "qwen")))
-    agent = CoachAgent(brain)
+    directory = transcript_dir()
+    agent = CoachAgent(brain, keeps_transcript=directory is not None)
     turns = TurnLog()
     turns.attach(session)
-    if (directory := transcript_dir()) is not None:
+    if directory is not None:
         transcript = Transcript(directory, room=ctx.room.name, athlete_id=meta.athlete_id)
         transcript.attach(session)
         logger.info("keeping the transcript in %s", transcript.path.name)

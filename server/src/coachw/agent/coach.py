@@ -20,6 +20,13 @@ INSTRUCTIONS = """\
 - 口语、简短，每次一两句话。用户在运动，喘着气听你说话。
 - 不朗读 markdown、列表符号、英文字段名或单位缩写。
 - 用户随时会打断你，被打断就停下来听。
+- 用户的一句话可能被切成几段先后到达，把连着的几段当成一句话理解；话明显没说完时，只简短接一句"嗯，你说"等他说完。
+
+像一个聪明、靠谱的真人教练那样对话：
+- 认真回应用户说的每一件事。跑步、训练、身体感受、装备、天气或者随便闲聊，都正常、有内容地回答，不要用"专心运动"之类的话把问题挡回去。
+- 记住这次对话里用户说过的话。用户让你复述、回忆或者问"我刚才说了什么"，就照这次对话的内容把他的原意复述出来。
+- 不要把同一句话说两遍；上一句没有回答到点子上，就换个说法直接回答。
+- 做不到的事直说做不到，并说清楚现在能做什么。你拿不到用户的位置、地图和周边信息，不要说自己看得到 GPS 或轨迹。
 
 数字规则（最重要）：
 - 你说出的每一个运动数字（心率、配速、距离、时间、步频、功率、卡路里等）都必须来自本轮刚调用的工具结果（get_metrics、get_progress、end_workout_summary），或本轮【教练提示】里给出的数字。
@@ -38,6 +45,21 @@ INSTRUCTIONS = """\
 
 安全：你不是医生。用户说胸痛、头晕、呼吸困难时，建议他立刻停下休息，必要时求助。
 """
+
+# Only true while the server keeps transcripts (COACHW_TRANSCRIPT_DIR): the developers read the
+# feedback there (COCH-15, the coach kept saying it could not note anything down).
+FEEDBACK_KEPT = """
+产品意见：用户提产品意见、改进点或者让你"记下来"时，这次对话的全文会保存下来给开发团队看。告诉他"记下了"，再用一句话复述要点，确认没听错。
+"""
+
+FEEDBACK_NOT_KEPT = """
+产品意见：用户提产品意见、改进点或者让你"记下来"时，这次对话不会保存。用一句话复述要点，并告诉他你记不下来，请他在手机上另外记一下。
+"""
+
+
+def instructions(keeps_transcript: bool) -> str:
+    return INSTRUCTIONS + (FEEDBACK_KEPT if keeps_transcript else FEEDBACK_NOT_KEPT)
+
 
 GREETING = "用一句简短的中文向用户打招呼，说你是他的教练，可以随时问你心率配速，也可以随时打断你。"
 
@@ -79,8 +101,9 @@ def profile_tool(brain: CoachBrain, spec: ProfileTool) -> llm.RawFunctionTool:
 
 
 class CoachAgent(Agent):
-    def __init__(self, brain: CoachBrain) -> None:
-        super().__init__(instructions=INSTRUCTIONS)
+    def __init__(self, brain: CoachBrain, keeps_transcript: bool = False) -> None:
+        self._instructions = instructions(keeps_transcript)
+        super().__init__(instructions=self._instructions)
         self.brain = brain
         self._base_tools = list(self.tools)
         self._status_id: str | None = None
@@ -90,7 +113,7 @@ class CoachAgent(Agent):
         profile = self.brain.profile
         if profile is None:
             return
-        await self.update_instructions(INSTRUCTIONS + "\n" + profile.prompt)
+        await self.update_instructions(self._instructions + "\n" + profile.prompt)
         await self.update_tools(
             self._base_tools + [profile_tool(self.brain, t) for t in profile.tools]
         )

@@ -10,7 +10,9 @@ from coachw.agent.coach import (
     INSTRUCTIONS,
     SESSION_CAP_FAREWELL,
     SESSION_LENGTH_FAREWELL,
+    CoachAgent,
     cap_farewell,
+    instructions,
 )
 from coachw.agent.worker import (
     AthleteInbox,
@@ -179,6 +181,15 @@ def test_farewell_only_blames_the_day_when_the_day_cut_the_session_short():
 def test_prompt_forbids_guessing_numbers():
     assert "get_metrics" in INSTRUCTIONS
     assert "禁止估计" in INSTRUCTIONS
+
+
+def test_prompt_only_promises_to_note_feedback_while_transcripts_are_kept():
+    assert "记下了" in instructions(keeps_transcript=True)
+    assert "记下了" not in instructions(keeps_transcript=False)
+    assert "记不下来" in instructions(keeps_transcript=False)
+    assert CoachAgent(CoachBrain(Athlete(athlete_id="a")), keeps_transcript=True).instructions == (
+        instructions(keeps_transcript=True)
+    )
 
 
 def test_turn_log_counts_without_keeping_words(caplog: pytest.LogCaptureFixture) -> None:
