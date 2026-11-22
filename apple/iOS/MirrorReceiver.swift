@@ -54,7 +54,7 @@ final class MirrorReceiver: NSObject {
             try await healthStore.startWatchApp(toHandle: activity.configuration())
         } catch {
             log.error("startWatchApp failed: \(error.localizedDescription)")
-            lastError = "无法启动手表 App：\(error.localizedDescription)"
+            lastError = "无法从手机启动手表：\(error.localizedDescription)\n请抬腕解锁手表，或直接在手表上打开 coach-w 开始，手机会自动接上。"
         }
     }
 
