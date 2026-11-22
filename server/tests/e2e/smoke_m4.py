@@ -30,6 +30,9 @@ from smoke_voice import ARTIFACTS, RATE, SILENCE, agent_log, peak, say, speak
 
 from coachw.protocol import CUE_TOPIC, METRICS_TOPIC, RESUME_TOPIC
 
+# Command that prints the agent log (e.g. ssh + docker compose logs); None reads logs/agent.log
+LOG_CMD: str | None = None
+
 RESUME = {
     "v": 1,
     "activity": "running",
@@ -151,7 +154,7 @@ async def resume_run(api_url: str, invite: str) -> tuple[dict, dict]:
     async def send_resume():
         await r.publish(RESUME_TOPIC, RESUME | {"ts": int(time.time() * 1000)})
 
-    log_offset = len(agent_log(None))
+    log_offset = len(agent_log(LOG_CMD))
     await r.join(on_agent=send_resume)
     # an agent that was already in the room when we joined gets it now, as the phone does
     agent = rtc.ParticipantKind.PARTICIPANT_KIND_AGENT
@@ -171,7 +174,7 @@ async def resume_run(api_url: str, invite: str) -> tuple[dict, dict]:
     await r.room.disconnect()
     await asyncio.sleep(1)
 
-    log = agent_log(None)[log_offset:]
+    log = agent_log(LOG_CMD)[log_offset:]
     said = r.transcripts()
     greeting = said[0][1] if said else ""
     kinds = [c.get("kind") for c in r.cues]
@@ -189,12 +192,12 @@ async def resume_run(api_url: str, invite: str) -> tuple[dict, dict]:
 
 async def cycling_run(api_url: str, invite: str) -> tuple[dict, dict]:
     r = Room(api_url, invite)
-    log_offset = len(agent_log(None))
+    log_offset = len(agent_log(LOG_CMD))
     await r.join()
     streaming = asyncio.create_task(r.stream("cycling", 0.0, 0.0, RIDE_MPS))
     await asyncio.sleep(20)
     await r.until_quiet(30)
-    offset = len(agent_log(None))
+    offset = len(agent_log(LOG_CMD))
     pcm = say("我现在骑得有多快？")
     t = time.monotonic()
     await speak(r.source, pcm)
@@ -207,7 +210,7 @@ async def cycling_run(api_url: str, invite: str) -> tuple[dict, dict]:
     await r.room.disconnect()
     await asyncio.sleep(1)
 
-    log = agent_log(None)
+    log = agent_log(LOG_CMD)
     answer = " ".join(text for ts, text in r.said if ts >= t)
     first = r.said[0][1] if r.said else ""
     checks = {
@@ -242,5 +245,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--api", default="http://127.0.0.1:8000")
     p.add_argument("--invite", required=True)
+    p.add_argument("--agent-log-cmd", help="prints the agent log, e.g. ssh + docker compose logs")
     args = p.parse_args()
+    LOG_CMD = args.agent_log_cmd
     sys.exit(asyncio.run(main(args.api, args.invite)))

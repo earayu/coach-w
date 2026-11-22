@@ -27,6 +27,9 @@ from smoke_voice import ARTIFACTS, RATE, SILENCE, agent_log, peak, say, speak
 
 from coachw.protocol import CUE_TOPIC, METRICS_TOPIC, CoachCue
 
+# Command that prints the agent log (e.g. ssh + docker compose logs); None reads logs/agent.log
+LOG_CMD: str | None = None
+
 SPEED_MPS = 1000 / 330
 CALM_HR, HIGH_HR = 141, 193  # 193 > 184, the default safety ceiling (spec 5.3)
 
@@ -40,7 +43,7 @@ async def main(api_url: str, invite: str) -> int:
     )
     with urllib.request.urlopen(req, timeout=10) as resp:
         session = json.loads(resp.read())
-    log_offset = len(agent_log(None))
+    log_offset = len(agent_log(LOG_CMD))
 
     room = rtc.Room()
     audio: list[tuple[float, int]] = []
@@ -134,7 +137,7 @@ async def main(api_url: str, invite: str) -> int:
         return " ".join(text for ts, text in said if ts >= t)
 
     async def ask(question: str) -> dict:
-        offset = len(agent_log(None))
+        offset = len(agent_log(LOG_CMD))
         pcm = say(question)
         t = time.monotonic()
         await speak(source, pcm)
@@ -143,7 +146,7 @@ async def main(api_url: str, invite: str) -> int:
             await asyncio.sleep(0.1)
         await until_quiet(40)
         await asyncio.sleep(2)
-        tools = re.findall(r"tool (\w+) called", agent_log(None)[offset:])
+        tools = re.findall(r"tool (\w+) called", agent_log(LOG_CMD)[offset:])
         return {"question": question, "answer": text_since(t), "tools": tools}
 
     checks: dict[str, bool] = {}
@@ -219,7 +222,7 @@ async def main(api_url: str, invite: str) -> int:
     ]
     checks["emergency_cut_in_spoken"] = any("心率" in text for _, text in after_cut)
 
-    log = agent_log(None)[log_offset:]
+    log = agent_log(LOG_CMD)[log_offset:]
     checks["profile_loaded"] = "profile loaded: running" in log
     checks["no_loop_errors"] = "coach loop step failed" not in log
     result = {
@@ -250,5 +253,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--api", default="http://127.0.0.1:8000")
     p.add_argument("--invite", required=True)
+    p.add_argument("--agent-log-cmd", help="prints the agent log, e.g. ssh + docker compose logs")
     args = p.parse_args()
+    LOG_CMD = args.agent_log_cmd
     sys.exit(asyncio.run(main(args.api, args.invite)))
