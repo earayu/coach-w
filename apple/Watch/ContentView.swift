@@ -24,7 +24,7 @@ struct ContentView: View {
                 #endif
             }
         }
-        .tint(PulseTheme.volt)
+        .tint(Theme.accent)
         .task {
             #if DEBUG
             if uiPreview != nil { return }
@@ -93,93 +93,48 @@ struct ContentView: View {
     #endif
 }
 
-/// Full-width Apple Watch Fitness-style activity picker with Pulse W obsidian cards.
+/// The Workout app's start screen: one tile per workout, tap to start.
 private struct StartView: View {
     let lastError: String?
     let onStart: (WorkoutActivity) -> Void
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [PulseTheme.obsidianTop, PulseTheme.watchCanvas],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
-
-            ScrollView {
-                VStack(spacing: 10) {
-                    HStack(spacing: 6) {
-                        PulseWMark(size: 24, showRings: false, breathing: false)
-                        Text("COACH W")
-                            .font(.system(size: 13, weight: .black, design: .rounded))
-                            .tracking(1.4)
-                            .foregroundStyle(PulseTheme.textSecondary)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 4)
-                    .padding(.top, 2)
-
-                    ForEach(WorkoutActivity.allCases) { activity in
-                        Button {
-                            onStart(activity)
-                        } label: {
-                            HStack(spacing: 12) {
-                                ZStack {
-                                    Circle()
-                                        .fill(PulseTheme.volt.opacity(0.16))
-                                        .frame(width: 38, height: 38)
-                                    Image(systemName: activity.symbol)
-                                        .font(.system(size: 18, weight: .bold))
-                                        .foregroundStyle(PulseTheme.volt)
-                                }
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(activity.title)
-                                        .font(.system(.headline, design: .rounded).weight(.bold))
-                                        .foregroundStyle(PulseTheme.textPrimary)
-                                    Text(activity.watchSubtitle)
-                                        .font(.caption2)
-                                        .foregroundStyle(PulseTheme.textSecondary)
-                                        .lineLimit(1)
-                                }
-
-                                Spacer(minLength: 4)
-
-                                Image(systemName: "chevron.right")
-                                    .font(.caption2.weight(.bold))
-                                    .foregroundStyle(PulseTheme.mint.opacity(0.8))
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 11)
-                            .background {
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .fill(PulseTheme.cardGradient)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                            .strokeBorder(PulseTheme.surfaceStroke, lineWidth: 1)
-                                    )
-                            }
+        ScrollView {
+            VStack(spacing: 8) {
+                ForEach(WorkoutActivity.allCases) { activity in
+                    Button {
+                        onStart(activity)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Image(systemName: activity.symbol)
+                                .font(.system(size: 22, weight: .semibold))
+                                .foregroundStyle(Theme.accent)
+                                .frame(width: 40, height: 40)
+                                .background(Theme.accent.opacity(0.18), in: Circle())
+                            Text(activity.title)
+                                .font(.system(.headline, design: .rounded))
+                                .foregroundStyle(.white)
                         }
-                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                     }
-
-                    if let error = lastError {
-                        Text(error)
-                            .font(.footnote)
-                            .foregroundStyle(PulseTheme.coral)
-                            .padding(.top, 4)
-                    }
+                    .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 6)
-                .padding(.bottom, 12)
+
+                if let error = lastError {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(Theme.red)
+                        .padding(.top, 4)
+                }
             }
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle("Coach W")
     }
 }
 
-/// High-contrast OLED workout dial tuned for outdoor sunlight legibility.
+/// During a workout, as on the Workout app: swipe right for the controls, metrics in the middle.
 private struct ActiveWorkoutView: View {
     let activity: WorkoutActivity
     let frame: MetricsFrame?
@@ -191,135 +146,16 @@ private struct ActiveWorkoutView: View {
     let onResume: () -> Void
     let onEnd: () -> Void
 
+    private enum Page { case controls, metrics }
+    @State private var page: Page = .metrics
+
     var body: some View {
-        let paused = !isRunning || frame?.state == .paused
-        let hrZone = HeartRateZone.zone(for: frame?.hrBpm)
-
-        ZStack {
-            Color.black.ignoresSafeArea()
-
-            VStack(alignment: .leading, spacing: 4) {
-                // Status header kept on the leading half so the watchOS clock stays clear on top-right
-                HStack(spacing: 5) {
-                    Image(systemName: activity.symbol)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(PulseTheme.mint)
-                    Text(isFinishing ? "正在保存…" : paused ? "已暂停" : activity.title)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(paused ? PulseTheme.amber : PulseTheme.textSecondary)
-                    if frame?.lat != nil {
-                        Image(systemName: "location.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(PulseTheme.mint)
-                    }
-                    Circle()
-                        .fill(paused ? PulseTheme.amber : PulseTheme.mint)
-                        .frame(width: 6, height: 6)
-                    Spacer()
-                }
-
-                // Giant high-contrast Volt timer
-                Text(Format.duration(frame?.elapsedS))
-                    .font(.system(size: 36, weight: .heavy, design: .rounded).monospacedDigit())
-                    .foregroundStyle(paused ? PulseTheme.amber : PulseTheme.volt)
-                    .minimumScaleFactor(0.7)
-                    .lineLimit(1)
-
-                // Heart rate + zone badge
-                HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Image(systemName: "heart.fill")
-                        .font(.body)
-                        .foregroundStyle(hrZone?.color ?? PulseTheme.coral)
-                    Text(Format.number(frame?.hrBpm))
-                        .font(.system(size: 27, weight: .bold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(frame?.hrBpm != nil ? PulseTheme.textPrimary : PulseTheme.textTertiary)
-                    Text("bpm")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(PulseTheme.textSecondary)
-                    Spacer(minLength: 2)
-                    if let hrZone {
-                        Text(hrZone.code)
-                            .font(.system(size: 11, weight: .black, design: .rounded))
-                            .foregroundStyle(PulseTheme.obsidianMid)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(hrZone.color, in: Capsule())
-                    }
-                }
-
-                // Distance + primary speed/pace row
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(Format.distanceNumber(frame?.distanceM))
-                            .font(.system(size: 19, weight: .bold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(frame?.distanceM != nil ? PulseTheme.textPrimary : PulseTheme.textTertiary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                        Text("km")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(PulseTheme.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Rectangle()
-                        .fill(Color.white.opacity(0.14))
-                        .frame(width: 1, height: 24)
-
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(Format.primarySpeedNumber(frame?.speedMps, readsAsPace: activity.readsSpeedAsPace))
-                            .font(.system(size: 19, weight: .bold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(frame?.speedMps != nil ? PulseTheme.mint : PulseTheme.textTertiary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                        Text(activity.speedUnit)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(PulseTheme.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.vertical, 2)
-
-                if let lastError {
-                    Text(lastError)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(PulseTheme.coral)
-                        .lineLimit(2)
-                }
-
-                Spacer(minLength: 2)
-
-                // High-contrast dual circular controls
-                HStack(spacing: 14) {
-                    watchCircleControl(
-                        symbol: isRunning ? "pause.fill" : "play.fill",
-                        label: isRunning ? "暂停" : "继续",
-                        foreground: isRunning ? PulseTheme.amber : PulseTheme.obsidianMid,
-                        background: isRunning ? PulseTheme.amber.opacity(0.24) : PulseTheme.volt,
-                        border: isRunning ? PulseTheme.amber.opacity(0.75) : PulseTheme.volt,
-                        action: {
-                            diag("watch-ui", "\(isRunning ? "pause" : "resume") button tapped")
-                            (isRunning ? onPause : onResume)()
-                        }
-                    )
-
-                    watchCircleControl(
-                        symbol: "xmark",
-                        label: "结束",
-                        foreground: PulseTheme.coral,
-                        background: PulseTheme.coral.opacity(0.24),
-                        border: PulseTheme.coral.opacity(0.75),
-                        action: {
-                            diag("watch-ui", "end button tapped")
-                            onEnd()
-                        }
-                    )
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .padding(.horizontal, 8)
-            .padding(.top, 2)
-            .padding(.bottom, 4)
+        TabView(selection: $page) {
+            controls.tag(Page.controls)
+            metrics.tag(Page.metrics)
         }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .background(Theme.canvas)
         .toolbar(.hidden, for: .navigationBar)
         .overlay(alignment: .top) {
             if let cue {
@@ -332,33 +168,97 @@ private struct ActiveWorkoutView: View {
         .animation(.spring(duration: 0.25), value: cue?.id)
     }
 
-    private func watchCircleControl(
-        symbol: String,
-        label: String,
-        foreground: Color,
-        background: Color,
-        border: Color,
-        action: @escaping () -> Void
-    ) -> some View {
+    private var paused: Bool { !isRunning || frame?.state == .paused }
+
+    private var metrics: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Kept on the leading half so the watchOS clock stays clear on the top right
+            HStack(spacing: 4) {
+                Image(systemName: activity.symbol)
+                    .foregroundStyle(Theme.accent)
+                Text(isFinishing ? "正在保存" : paused ? "已暂停" : activity.title)
+                    .foregroundStyle(paused ? Theme.yellow : Theme.secondaryText)
+            }
+            .font(.system(size: 13, weight: .semibold, design: .rounded))
+
+            Text(Format.duration(frame?.elapsedS))
+                .font(Theme.numeral(38))
+                .foregroundStyle(Theme.time)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                MetricLine(value: Format.number(frame?.hrBpm), unit: "BPM", unitColor: Theme.heart, size: 30, hasValue: frame?.hrBpm != nil)
+                Image(systemName: "heart.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(HeartRateZone.zone(for: frame?.hrBpm)?.color ?? Theme.heart)
+            }
+            MetricLine(
+                value: Format.primarySpeedNumber(frame?.speedMps, readsAsPace: activity.readsSpeedAsPace),
+                unit: activity.speedUnit,
+                unitColor: Theme.pace,
+                size: 30,
+                hasValue: frame?.speedMps != nil
+            )
+            MetricLine(
+                value: Format.distanceNumber(frame?.distanceM),
+                unit: "KM",
+                unitColor: Theme.accent,
+                size: 30,
+                hasValue: frame?.distanceM != nil
+            )
+
+            if let lastError {
+                Text(lastError)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.orange)
+                    .lineLimit(2)
+                    .padding(.top, 2)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 6)
+    }
+
+    private var controls: some View {
+        HStack(spacing: 14) {
+            control(symbol: "xmark", title: "结束", color: Theme.red) {
+                diag("watch-ui", "end button tapped")
+                onEnd()
+            }
+            control(
+                symbol: isRunning ? "pause.fill" : "arrow.clockwise",
+                title: isFinishing ? "正在保存" : isRunning ? "暂停" : "继续",
+                color: isRunning ? Theme.yellow : Theme.accent
+            ) {
+                diag("watch-ui", "\(isRunning ? "pause" : "resume") button tapped")
+                (isRunning ? onPause : onResume)()
+                page = .metrics
+            }
+            .disabled(isFinishing)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func control(symbol: String, title: String, color: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 3) {
+            VStack(spacing: 4) {
                 Image(systemName: symbol)
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundStyle(foreground)
-                    .frame(width: 46, height: 46)
-                    .background(background, in: Circle())
-                    .overlay(Circle().strokeBorder(border, lineWidth: 1.5))
-                Text(label)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(PulseTheme.textSecondary)
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(color)
+                    .frame(width: 62, height: 62)
+                    .background(color.opacity(0.22), in: Circle())
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white)
             }
         }
         .buttonStyle(.plain)
-        .frame(maxWidth: .infinity)
     }
 }
 
-/// High-contrast floating coach cue banner shown over the watch dial until expiry.
+/// A coach cue shown over the metrics until it expires.
 private struct CueBanner: View {
     let cue: CoachCue
 
@@ -366,30 +266,17 @@ private struct CueBanner: View {
         HStack(spacing: 8) {
             Image(systemName: cue.priority.symbol)
                 .font(.subheadline.weight(.bold))
-                .foregroundStyle(iconColor)
             Text(cue.text ?? "教练提醒")
-                .font(.system(.footnote, design: .rounded).weight(.bold))
-                .foregroundStyle(textColor)
+                .font(.system(.footnote, design: .rounded).weight(.semibold))
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
             Spacer(minLength: 0)
         }
+        .foregroundStyle(cue.priority == .emergency ? .white : .black)
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(cue.priority.accentColor)
-                .shadow(color: cue.priority.accentColor.opacity(0.45), radius: 10, y: 3)
-        )
-    }
-
-    private var textColor: Color {
-        cue.priority == .emergency ? .white : PulseTheme.obsidianMid
-    }
-
-    private var iconColor: Color {
-        cue.priority == .emergency ? .white : PulseTheme.obsidianMid
+        .background(cue.priority.accentColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 

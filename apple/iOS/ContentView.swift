@@ -20,7 +20,7 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                PulseBackground(auraOpacity: isWorkoutActive ? 0.12 : 0.18)
+                Theme.canvas.ignoresSafeArea()
 
                 #if DEBUG
                 if let preview = uiPreview {
@@ -32,46 +32,27 @@ struct ContentView: View {
                 liveBody
                 #endif
             }
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar(isWorkoutActive ? .hidden : .automatic, for: .navigationBar)
             .toolbar {
                 if showRootToolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         NavigationLink {
                             RecordsView(store: store)
                         } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "clock.arrow.trianglehead.counterclockwise.rotate.90")
-                                    .font(.subheadline.weight(.semibold))
-                                Text("记录")
-                                    .font(.subheadline.weight(.semibold))
-                                if !store.records.isEmpty {
-                                    Text("\(store.records.count)")
-                                        .font(.caption2.weight(.bold).monospacedDigit())
-                                        .foregroundStyle(PulseTheme.obsidianMid)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(PulseTheme.volt, in: Capsule())
-                                }
-                            }
-                            .foregroundStyle(PulseTheme.textPrimary)
+                            Image(systemName: "list.bullet")
                         }
+                        .accessibilityLabel("运动记录")
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
                             showSettings = true
                         } label: {
-                            ZStack(alignment: .topTrailing) {
-                                Image(systemName: "gearshape.fill")
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(PulseTheme.textPrimary)
-                                if showConfigDot {
-                                    Circle()
-                                        .fill(PulseTheme.amber)
-                                        .frame(width: 7, height: 7)
-                                        .offset(x: 3, y: -2)
+                            Image(systemName: "gearshape")
+                                .overlay(alignment: .topTrailing) {
+                                    if showConfigDot {
+                                        Circle().fill(Theme.orange).frame(width: 7, height: 7).offset(x: 3, y: -2)
+                                    }
                                 }
-                            }
                         }
                         .accessibilityLabel("设置")
                     }
@@ -81,7 +62,7 @@ struct ContentView: View {
                 SettingsView(settings: settings)
             }
         }
-        .tint(PulseTheme.volt)
+        .tint(Theme.accent)
         .preferredColorScheme(.dark)
         .task {
             #if DEBUG
@@ -145,7 +126,7 @@ struct ContentView: View {
                 lastRecord: recorder.lastRecord,
                 lastError: mirror.lastError,
                 isStartingWatch: mirror.isStartingWatch,
-                onStartWatch: { Task { await mirror.startOnWatch(activity) } },
+                onStartWatch: { chosen in Task { await mirror.startOnWatch(chosen) } },
                 onConnectVoice: { Task { await voice.start(settings: settings) } },
                 onToggleMute: { Task { await voice.toggleMute() } },
                 onStopVoice: { Task { await voice.stop() } },
@@ -166,15 +147,12 @@ struct ContentView: View {
                     isActive: true,
                     isConnected: true,
                     isMuted: false,
-                    needsLocalFallback: false,
-                    framesSent: 0,
-                    cuesReceived: 0,
-                    reconnects: 0
+                    needsLocalFallback: false
                 ),
                 isConfigured: true,
                 lastRecord: UIPreviewFixtures.sampleRecords.first,
                 lastError: nil,
-                onStartWatch: {},
+                onStartWatch: { _ in },
                 onConnectVoice: {},
                 onToggleMute: {},
                 onStopVoice: {},
@@ -191,10 +169,7 @@ struct ContentView: View {
                     isActive: true,
                     isConnected: true,
                     isMuted: false,
-                    needsLocalFallback: false,
-                    framesSent: 1718,
-                    cuesReceived: 5,
-                    reconnects: 0
+                    needsLocalFallback: false
                 ),
                 isConfigured: true,
                 lastError: nil,
@@ -226,13 +201,16 @@ private enum UIPreviewScene: String {
 
 /// Synthetic fixtures used solely when launching Simulator with `COACHW_UI_PREVIEW` in DEBUG builds.
 private enum UIPreviewFixtures {
+    /// Received just now, so the preview neither shows a stalled stream nor a runaway clock.
+    static let now = Int64(Date().timeIntervalSince1970 * 1000)
+
     static let sampleFrame = MetricsFrame(
         seq: 1718,
-        ts: 1_760_000_000_000,
+        ts: now,
         activity: "running",
         state: .running,
         elapsedS: 1718,
-        phoneTs: 1_760_000_000_068,
+        phoneTs: now + 68,
         hrBpm: 158,
         distanceM: 5240,
         speedMps: 3.185,
@@ -250,7 +228,7 @@ private enum UIPreviewFixtures {
     static var sampleStats: FrameStats {
         var stats = FrameStats()
         for i in 1...12 {
-            let ts: Int64 = 1_760_000_000_000 + Int64(i) * 1000
+            let ts: Int64 = now - 12_000 + Int64(i) * 1000
             stats.record(
                 MetricsFrame(
                     seq: i,

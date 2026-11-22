@@ -18,477 +18,231 @@ struct RecordsView: View {
     }
 
     var body: some View {
-        ZStack {
-            PulseBackground(auraOpacity: 0.12)
-
+        Group {
             if records.isEmpty {
-                emptyState
+                ContentUnavailableView(
+                    "还没有运动记录",
+                    systemImage: "figure.run",
+                    description: Text("用 Apple Watch 完成一次运动后，数据和教练对话会保存在这里。")
+                )
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        ForEach(records) { record in
-                            NavigationLink {
-                                RecordDetailView(record: record)
-                            } label: {
-                                RecordSummaryCard(record: record)
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button("删除这条记录", systemImage: "trash", role: .destructive) {
-                                    onDelete(record)
-                                }
+                List {
+                    ForEach(records) { record in
+                        NavigationLink {
+                            RecordDetailView(record: record)
+                        } label: {
+                            RecordRow(record: record)
+                        }
+                        .swipeActions {
+                            Button("删除", systemImage: "trash", role: .destructive) {
+                                onDelete(record)
                             }
                         }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 10)
-                    .padding(.bottom, 32)
                 }
-                .scrollIndicators(.hidden)
+                .listStyle(.insetGrouped)
+                .scrollContentBackground(.hidden)
             }
         }
+        .background(Theme.canvas)
         .navigationTitle("运动记录")
         .navigationBarTitleDisplayMode(.large)
-        .toolbarColorScheme(.dark, for: .navigationBar)
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 16) {
-            ZStack {
-                Circle()
-                    .fill(PulseTheme.volt.opacity(0.12))
-                    .frame(width: 82, height: 82)
-                Image(systemName: "figure.run.circle.fill")
-                    .font(.system(size: 40))
-                    .foregroundStyle(PulseTheme.pulseGradient)
-            }
-            VStack(spacing: 6) {
-                Text("还没有运动记录")
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(PulseTheme.textPrimary)
-                Text("戴上 Apple Watch 完成一次运动后，指标摘要、每公里分段和教练对话精彩回顾都会保存在这里。")
-                    .font(.subheadline)
-                    .foregroundStyle(PulseTheme.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 28)
-            }
-        }
-        .padding(28)
-        .frame(maxWidth: .infinity)
-        .pulseCard(cornerRadius: 24)
-        .padding(.horizontal, 20)
     }
 }
 
-/// Compact summary card reused in both the Lobby ("刚刚完成") and Records list.
-struct RecordSummaryCard: View {
+/// One workout in a list, as in the Fitness app: icon, name, the headline number, and the date.
+struct RecordRow: View {
     let record: WorkoutRecord
-    var highlighted: Bool = false
 
     var body: some View {
         let activity = WorkoutActivity(wireName: record.activity)
-        let hrZone = HeartRateZone.zone(for: record.avgHrBpm)
-
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(PulseTheme.pulseGradient.opacity(0.18))
-                        .frame(width: 44, height: 44)
-                    Image(systemName: activity.symbol)
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(PulseTheme.volt)
-                }
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(activity.title)
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(PulseTheme.textPrimary)
-                    Text(record.startedAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption)
-                        .foregroundStyle(PulseTheme.textSecondary)
-                }
-
-                Spacer()
-
-                VStack(alignment: .trailing, spacing: 2) {
-                    if let meters = record.distanceM {
-                        Text(Format.distance(meters))
-                            .font(.system(.title3, design: .rounded).weight(.bold).monospacedDigit())
-                            .foregroundStyle(PulseTheme.volt)
-                    }
-                    Text(Format.duration(record.durationS))
-                        .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(PulseTheme.textSecondary)
-                }
-
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(PulseTheme.textTertiary)
+        HStack(spacing: 14) {
+            Image(systemName: activity.symbol)
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 44, height: 44)
+                .background(Theme.accent.opacity(0.16), in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(activity.title)
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                Text(record.distanceM.map(Format.distance) ?? Format.duration(record.durationS))
+                    .font(Theme.numeral(24))
+                    .foregroundStyle(Theme.accent)
             }
-
-            HStack(spacing: 8) {
-                if let speed = record.avgSpeedMps {
-                    miniBadge(
-                        icon: "speedometer",
-                        text: Format.primarySpeed(speed, readsAsPace: activity.readsSpeedAsPace),
-                        tint: PulseTheme.textSecondary
-                    )
-                }
-                if let hr = record.avgHrBpm {
-                    miniBadge(
-                        icon: "heart.fill",
-                        text: Format.value(hr, unit: "bpm"),
-                        tint: hrZone?.color ?? PulseTheme.coral
-                    )
-                }
-                if !record.lines.isEmpty {
-                    miniBadge(
-                        icon: "waveform",
-                        text: "\(record.lines.count) 条教练对话",
-                        tint: PulseTheme.mint
-                    )
-                }
-                Spacer(minLength: 0)
-            }
+            Spacer()
+            Text(record.startedAt.formatted(.relative(presentation: .named)))
+                .font(.footnote)
+                .foregroundStyle(Theme.secondaryText)
         }
-        .padding(14)
-        .pulseCard(highlighted: highlighted, cornerRadius: 20)
-    }
-
-    private func miniBadge(icon: String, text: String, tint: Color) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.system(size: 10, weight: .bold))
-            Text(text)
-                .font(.caption2.weight(.semibold).monospacedDigit())
-        }
-        .foregroundStyle(tint)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(PulseTheme.obsidianMid.opacity(0.65), in: Capsule())
+        .padding(.vertical, 2)
     }
 }
 
-/// Post-workout summary detail screen: hero card, metrics summary, km split bars, and coach timeline.
+/// After a workout: the summary grid, km splits, and what the coach and you said.
 struct RecordDetailView: View {
     let record: WorkoutRecord
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 10),
-        GridItem(.flexible(), spacing: 10),
-    ]
-
     var body: some View {
         let activity = WorkoutActivity(wireName: record.activity)
-
-        ZStack {
-            PulseBackground(auraOpacity: 0.14)
-
-            ScrollView {
-                VStack(spacing: 16) {
-                    heroSummaryCard(activity: activity)
-                    secondarySummaryGrid(activity: activity)
-
-                    if !record.kmSplitsS.isEmpty {
-                        splitsCard
-                    }
-
-                    coachTimelineCard
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 36)
-            }
-            .scrollIndicators(.hidden)
-        }
-        .navigationTitle("\(activity.title)总结")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
-    }
-
-    private func heroSummaryCard(activity: WorkoutActivity) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                HStack(spacing: 8) {
+        List {
+            Section {
+                HStack(spacing: 14) {
                     Image(systemName: activity.symbol)
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(PulseTheme.obsidianMid)
-                        .frame(width: 28, height: 28)
-                        .background(PulseTheme.pulseGradient, in: Circle())
-                    Text(activity.title)
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(PulseTheme.textPrimary)
+                        .font(.title.weight(.semibold))
+                        .foregroundStyle(Theme.accent)
+                        .frame(width: 56, height: 56)
+                        .background(Theme.accent.opacity(0.16), in: Circle())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(activity.title)
+                            .font(.title3.weight(.semibold))
+                        Text(timeRange)
+                            .font(.footnote)
+                            .foregroundStyle(Theme.secondaryText)
+                    }
                 }
-                Spacer()
-                Text(record.startedAt.formatted(date: .abbreviated, time: .shortened))
-                    .font(.caption)
-                    .foregroundStyle(PulseTheme.textSecondary)
+                .padding(.vertical, 4)
             }
 
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if let meters = record.distanceM {
-                    Text(Format.distanceNumber(meters))
-                        .font(.system(size: 52, weight: .black, design: .rounded).monospacedDigit())
-                        .foregroundStyle(PulseTheme.pulseGradient)
-                    Text("km")
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(PulseTheme.textSecondary)
+            Section("运动详情") {
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 14) {
+                    ForEach(Array(stride(from: 0, to: metrics.count, by: 2)), id: \.self) { index in
+                        GridRow {
+                            metricCell(metrics[index])
+                            if index + 1 < metrics.count {
+                                metricCell(metrics[index + 1])
+                            }
+                        }
+                        if index + 2 < metrics.count {
+                            Divider().gridCellColumns(2)
+                        }
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+
+            if !record.kmSplitsS.isEmpty {
+                Section("分段") {
+                    ForEach(Array(record.kmSplitsS.enumerated()), id: \.offset) { index, seconds in
+                        let isFastest = index + 1 == record.fastestKm
+                        HStack {
+                            Text("第 \(index + 1) 公里")
+                                .foregroundStyle(Theme.secondaryText)
+                            if isFastest {
+                                Text("最快")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Theme.accent)
+                            }
+                            Spacer()
+                            Text(Format.paceNumber(1000 / max(seconds, 1)))
+                                .font(Theme.numeral(17))
+                                .foregroundStyle(isFastest ? Theme.accent : Theme.pace)
+                        }
+                    }
+                }
+            }
+
+            Section("教练对话") {
+                if record.lines.isEmpty {
+                    Text("这次运动没有记录到对话。")
+                        .foregroundStyle(Theme.secondaryText)
                 } else {
-                    Text(Format.duration(record.durationS))
-                        .font(.system(size: 48, weight: .black, design: .rounded).monospacedDigit())
-                        .foregroundStyle(PulseTheme.pulseGradient)
-                }
-            }
-
-            HStack(spacing: 0) {
-                summaryStat(title: "总时长", value: Format.duration(record.durationS))
-                if let speed = record.avgSpeedMps {
-                    Rectangle().fill(PulseTheme.surfaceStroke).frame(width: 1, height: 32)
-                    summaryStat(
-                        title: activity.averageSpeedTitle,
-                        value: Format.primarySpeed(speed, readsAsPace: activity.readsSpeedAsPace)
-                    )
-                }
-                if let hr = record.avgHrBpm {
-                    Rectangle().fill(PulseTheme.surfaceStroke).frame(width: 1, height: 32)
-                    summaryStat(title: "平均心率", value: Format.value(hr, unit: "bpm"))
-                }
-            }
-            .padding(.vertical, 10)
-            .background(PulseTheme.obsidianMid.opacity(0.6), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-        .padding(18)
-        .pulseCard(highlighted: true, cornerRadius: 24)
-    }
-
-    private func summaryStat(title: String, value: String) -> some View {
-        VStack(spacing: 3) {
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(PulseTheme.textTertiary)
-            Text(value)
-                .font(.system(.subheadline, design: .rounded).weight(.bold).monospacedDigit())
-                .foregroundStyle(PulseTheme.textPrimary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    @ViewBuilder
-    private func secondarySummaryGrid(activity: WorkoutActivity) -> some View {
-        let items = detailMetrics(for: activity)
-        if !items.isEmpty {
-            LazyVGrid(columns: columns, spacing: 10) {
-                ForEach(items) { item in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 6) {
-                            Image(systemName: item.symbol)
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(item.accent)
-                            Text(item.title)
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(PulseTheme.textSecondary)
-                        }
-                        Text(item.value)
-                            .font(.system(size: 22, weight: .bold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(PulseTheme.textPrimary)
-                    }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .pulseCard(cornerRadius: 16)
-                }
-            }
-        }
-    }
-
-    private var splitsCard: some View {
-        let slowest = record.kmSplitsS.max() ?? 1
-        let fastest = record.kmSplitsS.min() ?? 1
-        let span = max(slowest - fastest, 1)
-
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Label("每公里分段", systemImage: "flag.checkered")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(PulseTheme.textPrimary)
-                Spacer()
-                if let fastestKm = record.fastestKm {
-                    Label("最快第 \(fastestKm) 公里", systemImage: "bolt.fill")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(PulseTheme.obsidianMid)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 4)
-                        .background(PulseTheme.volt, in: Capsule())
-                }
-            }
-
-            VStack(spacing: 10) {
-                ForEach(Array(record.kmSplitsS.enumerated()), id: \.offset) { index, seconds in
-                    let isFastest = index + 1 == record.fastestKm
-                    // Faster split gets a fuller visual bar (0.45...1.0)
-                    let ratio = record.kmSplitsS.count == 1
-                        ? 0.85
-                        : 0.45 + 0.55 * (1.0 - (seconds - fastest) / span)
-
-                    HStack(spacing: 10) {
-                        Text("\(index + 1)K")
-                            .font(.caption.weight(.bold).monospacedDigit())
-                            .foregroundStyle(isFastest ? PulseTheme.volt : PulseTheme.textSecondary)
-                            .frame(width: 28, alignment: .leading)
-
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                Capsule()
-                                    .fill(PulseTheme.obsidianMid.opacity(0.7))
-                                Capsule()
-                                    .fill(
-                                        isFastest
-                                            ? AnyShapeStyle(PulseTheme.pulseHorizontal)
-                                            : AnyShapeStyle(PulseTheme.mint.opacity(0.55))
-                                    )
-                                    .frame(width: max(20, geo.size.width * ratio))
+                    ForEach(record.lines) { line in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Text(line.source.title)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(line.source.accent)
+                                Text(line.at.formatted(date: .omitted, time: .shortened))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(Theme.tertiaryText)
                             }
+                            Text(line.text)
+                                .font(.subheadline)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        .frame(height: 10)
-
-                        Text(Format.duration(seconds))
-                            .font(.subheadline.weight(.bold).monospacedDigit())
-                            .foregroundStyle(isFastest ? PulseTheme.volt : PulseTheme.textPrimary)
-                            .frame(width: 48, alignment: .trailing)
+                        .padding(.vertical, 2)
                     }
                 }
             }
         }
-        .padding(16)
-        .pulseCard(cornerRadius: 20)
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Theme.canvas)
+        .navigationTitle(record.startedAt.formatted(date: .abbreviated, time: .omitted))
+        .navigationBarTitleDisplayMode(.inline)
     }
 
-    private var coachTimelineCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Label("教练对话回顾", systemImage: "waveform")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(PulseTheme.textPrimary)
-                Spacer()
-                Text("\(record.lines.count) 条")
-                    .font(.caption2.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(PulseTheme.textSecondary)
-            }
-
-            if record.lines.isEmpty {
-                Text("这次运动没有记录到语音教练对话。")
-                    .font(.subheadline)
-                    .foregroundStyle(PulseTheme.textTertiary)
-                    .padding(.vertical, 8)
-            } else {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(record.lines.enumerated()), id: \.element.id) { index, line in
-                        let accent = line.source.accent
-                        HStack(alignment: .top, spacing: 12) {
-                            VStack(spacing: 0) {
-                                Circle()
-                                    .fill(accent)
-                                    .frame(width: 9, height: 9)
-                                    .padding(.top, 5)
-                                if index < record.lines.count - 1 {
-                                    Rectangle()
-                                        .fill(PulseTheme.surfaceStroke)
-                                        .frame(width: 1.5)
-                                        .frame(maxHeight: .infinity)
-                                        .padding(.top, 4)
-                                }
-                            }
-                            .frame(width: 12)
-
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack(spacing: 6) {
-                                    Label(line.source.title, systemImage: line.source.symbol)
-                                    .font(.caption2.weight(.bold))
-                                    .foregroundStyle(accent)
-
-                                    Text(line.at.formatted(date: .omitted, time: .shortened))
-                                        .font(.caption2.monospacedDigit())
-                                        .foregroundStyle(PulseTheme.textTertiary)
-                                }
-
-                                Text(line.text)
-                                    .font(.subheadline)
-                                    .foregroundStyle(PulseTheme.textPrimary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .padding(12)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(
-                                        PulseTheme.obsidianMid.opacity(0.68),
-                                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    )
-                            }
-                            .padding(.bottom, index < record.lines.count - 1 ? 14 : 0)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(16)
-        .pulseCard(cornerRadius: 20)
+    private var timeRange: String {
+        let start = record.startedAt.formatted(date: .omitted, time: .shortened)
+        let end = record.endedAt.formatted(date: .omitted, time: .shortened)
+        return "\(start) – \(end)"
     }
 
-    private struct DetailMetric: Identifiable {
-        let id: String
+    private struct Metric {
         let title: String
-        let symbol: String
         let value: String
-        let accent: Color
+        let unit: String
+        let color: Color
     }
 
-    private func detailMetrics(for activity: WorkoutActivity) -> [DetailMetric] {
-        var items: [DetailMetric] = []
-        if let hr = record.maxHrBpm {
-            let zoneColor = HeartRateZone.zone(for: hr)?.color ?? PulseTheme.coral
-            items.append(.init(id: "maxHr", title: "最高心率", symbol: "heart.fill", value: Format.value(hr, unit: "bpm"), accent: zoneColor))
+    private var metrics: [Metric] {
+        let activity = WorkoutActivity(wireName: record.activity)
+        var items = [Metric(title: "运动时间", value: Format.duration(record.durationS), unit: "", color: Theme.time)]
+        if let meters = record.distanceM {
+            items.append(Metric(title: "距离", value: Format.distanceNumber(meters), unit: "KM", color: Theme.accent))
         }
-        if let kcal = record.energyKcal {
-            items.append(.init(id: "kcal", title: "活动能量", symbol: "flame.fill", value: Format.value(kcal, unit: "kcal"), accent: PulseTheme.orange))
-        }
-        if let cadence = record.avgCadenceSpm {
-            items.append(.init(
-                id: "cadence",
-                title: "平均\(activity.cadenceTitle)",
-                symbol: "metronome.fill",
-                value: Format.value(cadence, unit: activity.cadenceUnit),
-                accent: PulseTheme.mint
+        if let speed = record.avgSpeedMps {
+            items.append(Metric(
+                title: activity.averageSpeedTitle,
+                value: Format.primarySpeedNumber(speed, readsAsPace: activity.readsSpeedAsPace),
+                unit: activity.speedUnit,
+                color: Theme.pace
             ))
         }
+        if let hr = record.avgHrBpm {
+            items.append(Metric(title: "平均心率", value: Format.number(hr), unit: "BPM", color: Theme.heart))
+        }
+        if let hr = record.maxHrBpm {
+            items.append(Metric(title: "最高心率", value: Format.number(hr), unit: "BPM", color: Theme.heart))
+        }
+        if let kcal = record.energyKcal {
+            items.append(Metric(title: "活动能量", value: Format.number(kcal), unit: "KCAL", color: Theme.energy))
+        }
+        if let cadence = record.avgCadenceSpm {
+            items.append(Metric(title: "平均\(activity.cadenceTitle)", value: Format.number(cadence), unit: activity.cadenceUnit, color: Theme.teal))
+        }
         if let power = record.avgPowerW {
-            items.append(.init(id: "power", title: "平均功率", symbol: "bolt.fill", value: Format.value(power, unit: "W"), accent: PulseTheme.volt))
+            items.append(Metric(title: "平均功率", value: Format.number(power), unit: "W", color: Theme.green))
         }
         return items
+    }
+
+    private func metricCell(_ metric: Metric) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(metric.title)
+                .font(.subheadline)
+                .foregroundStyle(.white)
+            MetricLine(value: metric.value, unit: metric.unit, color: metric.color, size: 28)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 private extension CoachLine.Source {
     var title: String {
         switch self {
-        case .coach: "语音教练"
+        case .coach: "教练"
         case .local: "本机播报"
         case .athlete: "我"
         }
     }
 
-    var symbol: String {
-        switch self {
-        case .coach: "waveform"
-        case .local: "iphone"
-        case .athlete: "person.fill"
-        }
-    }
-
     var accent: Color {
         switch self {
-        case .coach: PulseTheme.mint
-        case .local: PulseTheme.amber
-        case .athlete: PulseTheme.volt
+        case .coach: Theme.accent
+        case .local: Theme.orange
+        case .athlete: Theme.teal
         }
     }
 }

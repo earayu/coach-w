@@ -2,7 +2,7 @@ import CoachKit
 import SwiftUI
 import UIKit
 
-/// Obsidian Pulse W settings sheet: server validation status, masked invite code, and copyable athlete ID.
+/// Settings as a plain iOS form: server, invite code, athlete ID, developer options, diagnostics.
 struct SettingsView: View {
     @Bindable var settings: AppSettings
     @Environment(\.dismiss) private var dismiss
@@ -12,334 +12,127 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                PulseBackground(auraOpacity: 0.10)
-
-                ScrollView {
-                    VStack(spacing: 16) {
-                        readinessCard
-                        serverCard
-                        inviteCodeCard
-                        athleteIDCard
-                        developerCard
-                        diagnosticsCard
+            Form {
+                Section {
+                    LabeledContent("服务器") {
+                        TextField("", text: $settings.apiBaseURL, prompt: Text(verbatim: "https://coach.apemind.ai"))
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing)
                     }
-                    .padding(.horizontal, 18)
-                    .padding(.top, 12)
-                    .padding(.bottom, 32)
+                    LabeledContent("邀请码") {
+                        HStack(spacing: 8) {
+                            Group {
+                                if showInviteCode {
+                                    TextField("", text: $settings.inviteCode, prompt: Text("必填"))
+                                } else {
+                                    SecureField("", text: $settings.inviteCode, prompt: Text("必填"))
+                                }
+                            }
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing)
+                            Button {
+                                showInviteCode.toggle()
+                            } label: {
+                                Image(systemName: showInviteCode ? "eye.slash" : "eye")
+                                    .foregroundStyle(Theme.secondaryText)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel(showInviteCode ? "隐藏邀请码" : "显示邀请码")
+                        }
+                    }
+                } header: {
+                    Text("语音教练")
+                } footer: {
+                    Text(serverFooter)
+                        .foregroundStyle(serverFooterIsError ? Theme.red : Theme.secondaryText)
                 }
-                .scrollIndicators(.hidden)
+
+                Section {
+                    Button {
+                        UIPasteboard.general.string = settings.athleteID
+                        copiedAthleteID = true
+                        Task {
+                            try? await Task.sleep(for: .seconds(1.8))
+                            copiedAthleteID = false
+                        }
+                    } label: {
+                        LabeledContent {
+                            Image(systemName: copiedAthleteID ? "checkmark" : "doc.on.doc")
+                                .foregroundStyle(copiedAthleteID ? Theme.green : Theme.secondaryText)
+                        } label: {
+                            Text(settings.athleteID)
+                                .font(.footnote.monospaced())
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                } header: {
+                    Text("运动者 ID")
+                } footer: {
+                    Text("首次安装时随机生成，只用来区分会话，不含姓名。点按复制。")
+                }
+
+                Section {
+                    Picker("主动播报", selection: $settings.cueWriter) {
+                        ForEach(AppSettings.cueWriters, id: \.id) { option in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(option.title)
+                                Text(option.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.secondaryText)
+                            }
+                            .tag(option.id)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                } header: {
+                    Text("开发者选项")
+                } footer: {
+                    Text("「先写稿」：每条主动播报先由文本模型结合常识和最近的对话写好，再由语音模型说出；安全提醒不经过它。你提问时仍由语音模型直接回答。断开语音后重新连接生效。")
+                }
+
+                Section {
+                    ShareLink(item: Diagnostics.shared.contents(), preview: SharePreview("coach-w 诊断日志")) {
+                        Label("分享诊断日志", systemImage: "square.and.arrow.up")
+                    }
+                } footer: {
+                    Text("记录按钮点击、运动与语音状态的变化，用于排查「点了没反应」。不含心率、位置和对话内容。")
+                }
             }
+            .scrollContentBackground(.hidden)
+            .background(Theme.canvas)
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button("完成") {
                         settings.normalize()
                         dismiss()
                     }
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(PulseTheme.volt)
+                    .fontWeight(.semibold)
                 }
             }
         }
+        .tint(Theme.accent)
         .preferredColorScheme(.dark)
     }
 
-    private var readinessCard: some View {
-        let ready = settings.isConfigured
-        let accent = ready ? PulseTheme.mint : PulseTheme.amber
-        return HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(accent.opacity(0.18))
-                    .frame(width: 40, height: 40)
-                Image(systemName: ready ? "checkmark.seal.fill" : "exclamationmark.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(accent)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(ready ? "语音教练已就绪" : "还差一步完成配置")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(PulseTheme.textPrimary)
-                Text(ready ? "返回主页即可一键连接实时语音教练" : "请填写有效的服务器地址与邀请码")
-                    .font(.caption)
-                    .foregroundStyle(PulseTheme.textSecondary)
-            }
-            Spacer()
-        }
-        .padding(14)
-        .pulseCard(highlighted: ready, cornerRadius: 18)
-    }
-
-    private var serverCard: some View {
-        let state = serverValidation
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("服务器地址", systemImage: "network")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(PulseTheme.textPrimary)
-                Spacer()
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(state.color)
-                        .frame(width: 7, height: 7)
-                    Text(state.label)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(state.color)
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(state.color.opacity(0.14), in: Capsule())
-            }
-
-            TextField(
-                "",
-                text: $settings.apiBaseURL,
-                prompt: Text("https://coach.apemind.ai").foregroundStyle(PulseTheme.textTertiary)
-            )
-            .keyboardType(.URL)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .font(.subheadline.monospaced())
-            .foregroundStyle(PulseTheme.textPrimary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(PulseTheme.obsidianMid.opacity(0.75), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .strokeBorder(state.borderColor, lineWidth: 1)
-            )
-
-            Text(verbatim: "正式环境填 https 域名（例如 https://coach.apemind.ai），本地开发填 Mac 局域网地址。")
-                .font(.caption)
-                .foregroundStyle(PulseTheme.textTertiary)
-        }
-        .padding(16)
-        .pulseCard(cornerRadius: 20)
-    }
-
-    private var inviteCodeCard: some View {
-        let filled = !settings.trimmedInviteCode.isEmpty
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("邀请码", systemImage: "key.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(PulseTheme.textPrimary)
-                Spacer()
-                Text(filled ? "已填写" : "必填")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(filled ? PulseTheme.mint : PulseTheme.textTertiary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .background(
-                        (filled ? PulseTheme.mint.opacity(0.14) : PulseTheme.obsidianMid.opacity(0.6)),
-                        in: Capsule()
-                    )
-            }
-
-            HStack(spacing: 10) {
-                Group {
-                    if showInviteCode {
-                        TextField(
-                            "",
-                            text: $settings.inviteCode,
-                            prompt: Text("输入邀请码").foregroundStyle(PulseTheme.textTertiary)
-                        )
-                    } else {
-                        SecureField(
-                            "",
-                            text: $settings.inviteCode,
-                            prompt: Text("输入邀请码").foregroundStyle(PulseTheme.textTertiary)
-                        )
-                    }
-                }
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .font(.subheadline.monospaced())
-                .foregroundStyle(PulseTheme.textPrimary)
-
-                Button {
-                    showInviteCode.toggle()
-                } label: {
-                    Image(systemName: showInviteCode ? "eye.slash.fill" : "eye.fill")
-                        .font(.subheadline)
-                        .foregroundStyle(PulseTheme.textSecondary)
-                        .frame(width: 30, height: 30)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(showInviteCode ? "隐藏邀请码" : "显示邀请码")
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(PulseTheme.obsidianMid.opacity(0.75), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .strokeBorder(PulseTheme.surfaceStroke, lineWidth: 1)
-            )
-
-            HStack(spacing: 6) {
-                Image(systemName: "lock.shield.fill")
-                    .font(.caption2)
-                    .foregroundStyle(PulseTheme.mint)
-                Text("邀请码加密保存在本机 iOS 钥匙串，不写入日志。")
-                    .font(.caption)
-                    .foregroundStyle(PulseTheme.textTertiary)
-            }
-        }
-        .padding(16)
-        .pulseCard(cornerRadius: 20)
-    }
-
-    private var athleteIDCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("运动者 ID", systemImage: "person.text.rectangle")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(PulseTheme.textPrimary)
-                Spacer()
-                Button {
-                    UIPasteboard.general.string = settings.athleteID
-                    withAnimation(.spring(duration: 0.25)) {
-                        copiedAthleteID = true
-                    }
-                    Task {
-                        try? await Task.sleep(for: .seconds(1.8))
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            copiedAthleteID = false
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: copiedAthleteID ? "checkmark" : "doc.on.doc")
-                            .font(.caption2.weight(.bold))
-                        Text(copiedAthleteID ? "已复制" : "复制")
-                            .font(.caption2.weight(.bold))
-                    }
-                    .foregroundStyle(copiedAthleteID ? PulseTheme.obsidianMid : PulseTheme.volt)
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 5)
-                    .background(
-                        copiedAthleteID ? PulseTheme.mint : PulseTheme.volt.opacity(0.14),
-                        in: Capsule()
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-
-            Text(settings.athleteID)
-                .font(.footnote.monospaced())
-                .foregroundStyle(PulseTheme.textSecondary)
-                .textSelection(.enabled)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(PulseTheme.obsidianMid.opacity(0.75), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-
-            Text("首次安装随机生成的匿名标识，仅用于服务端区分会话，不含个人姓名。")
-                .font(.caption)
-                .foregroundStyle(PulseTheme.textTertiary)
-        }
-        .padding(16)
-        .pulseCard(cornerRadius: 20)
-    }
-
-    /// Testing-phase switches (COCH-15); to be removed once the choices are settled.
-    private var developerCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("开发者选项", systemImage: "hammer.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(PulseTheme.textPrimary)
-                Spacer()
-                Text("测试阶段")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(PulseTheme.amber)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .background(PulseTheme.amber.opacity(0.14), in: Capsule())
-            }
-            Text("教练主动播报怎么写")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(PulseTheme.textSecondary)
-            VStack(spacing: 8) {
-                ForEach(AppSettings.cueWriters, id: \.id) { option in
-                    let selected = settings.cueWriter == option.id
-                    Button {
-                        settings.cueWriter = option.id
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                                .foregroundStyle(selected ? PulseTheme.volt : PulseTheme.textTertiary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(option.title)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(PulseTheme.textPrimary)
-                                Text(option.detail)
-                                    .font(.caption)
-                                    .foregroundStyle(PulseTheme.textTertiary)
-                            }
-                            Spacer()
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(
-                            PulseTheme.obsidianMid.opacity(selected ? 0.95 : 0.6),
-                            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                .strokeBorder(selected ? PulseTheme.volt.opacity(0.5) : PulseTheme.surfaceStroke, lineWidth: 1)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            Text("「先写稿」：每条主动播报先由更聪明的文本模型结合常识和最近的对话写好，再由语音模型说出来；安全提醒不经过它，照常立刻说。你问教练问题时还是语音模型直接回答。结束语音再重新连接后生效。")
-                .font(.caption)
-                .foregroundStyle(PulseTheme.textTertiary)
-        }
-        .padding(16)
-        .pulseCard(cornerRadius: 20)
-    }
-
-    private var diagnosticsCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("诊断日志", systemImage: "doc.text.magnifyingglass")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(PulseTheme.textPrimary)
-                Spacer()
-                ShareLink(item: Diagnostics.shared.contents(), preview: SharePreview("coach-w 诊断日志")) {
-                    Label("分享", systemImage: "square.and.arrow.up")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(PulseTheme.volt)
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 5)
-                        .background(PulseTheme.volt.opacity(0.14), in: Capsule())
-                }
-                .buttonStyle(.plain)
-            }
-            Text("记录按钮点击、运动与语音状态的变化，用于排查「点了没反应」。不含心率、位置和对话内容。")
-                .font(.caption)
-                .foregroundStyle(PulseTheme.textTertiary)
-        }
-        .padding(16)
-        .pulseCard(cornerRadius: 20)
-    }
-
-    private var serverValidation: (label: String, color: Color, borderColor: Color) {
+    private var serverFooterIsError: Bool {
         let trimmed = settings.apiBaseURL.trimmedForSettings
-        if trimmed.isEmpty {
-            return ("待填写", PulseTheme.textTertiary, PulseTheme.surfaceStroke)
+        return !trimmed.isEmpty && ServerAddress.parse(trimmed) == nil
+    }
+
+    private var serverFooter: String {
+        let trimmed = settings.apiBaseURL.trimmedForSettings
+        if serverFooterIsError { return "服务器地址格式不对，应以 https:// 或 http:// 开头。" }
+        if !trimmed.isEmpty, ServerAddress.parse(trimmed)?.scheme?.lowercased() == "http" {
+            return "正在用局域网 HTTP 地址，仅限本地开发。邀请码保存在本机钥匙串。"
         }
-        if let url = ServerAddress.parse(trimmed) {
-            if url.scheme?.lowercased() == "https" {
-                return ("HTTPS 就绪", PulseTheme.mint, PulseTheme.mint.opacity(0.42))
-            }
-            return ("局域网 HTTP", PulseTheme.amber, PulseTheme.amber.opacity(0.42))
-        }
-        return ("地址格式无效", PulseTheme.coral, PulseTheme.coral.opacity(0.55))
+        return "正式环境填 https 域名，本地开发填 Mac 的局域网地址。邀请码保存在本机钥匙串，不写入日志。"
     }
 }
