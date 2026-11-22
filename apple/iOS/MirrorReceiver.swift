@@ -234,6 +234,22 @@ extension MirrorReceiver: HKWorkoutSessionDelegate {
             guard self.session === workoutSession else { return }
             self.session = nil
             self.lastError = "与手表断开：\(message)"
+            self.closeIfNotReattached()
+        }
+    }
+
+    /// How long a disconnected workout waits for the watch to mirror again before the phone closes
+    /// it. HealthKit re-mirrors in about 15 s; a link that stays down past this means the workout
+    /// ended on the watch without the phone hearing of it (COCH-15).
+    static let reattachTimeout: Duration = .seconds(120)
+
+    private func closeIfNotReattached() {
+        let start = sessionStart
+        Task { [weak self] in
+            try? await Task.sleep(for: Self.reattachTimeout)
+            guard let self, self.session == nil, self.isActive, self.sessionStart == start else { return }
+            diag("phone", "watch did not mirror again within \(Self.reattachTimeout); closing on the phone")
+            self.close(error: "与手表断开太久，已在手机上保存本次记录。手表上的运动请在手表上确认已结束。")
         }
     }
 

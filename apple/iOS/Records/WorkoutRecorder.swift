@@ -22,6 +22,9 @@ final class WorkoutRecorder {
     @ObservationIgnored private var tracker = WorkoutTracker()
     @ObservationIgnored private var coach = LocalCoach()
     @ObservationIgnored private var startedAt: Date?
+    /// One id per workout: checkpoints and the final save overwrite the same file.
+    @ObservationIgnored private var recordID = UUID()
+    @ObservationIgnored private var lastCheckpoint: Date?
     @ObservationIgnored private var finished = true
     @ObservationIgnored private var dropped = 0
     /// The coach's closing summary comes after the final frame: lines keep landing in the saved
@@ -29,6 +32,9 @@ final class WorkoutRecorder {
     @ObservationIgnored private var lateLinesUntil: Date?
 
     static let lateLinesWindow: TimeInterval = 90
+    /// A run whose end never reaches the phone (COCH-15: the watch link dropped at the end of a
+    /// one-hour run and the app was suspended) must not lose its record: save it as it goes.
+    static let checkpointInterval: TimeInterval = 60
 
     init(store: WorkoutStore) {
         self.store = store
@@ -51,6 +57,8 @@ final class WorkoutRecorder {
         lateLinesUntil = nil
         dropped = 0
         startedAt = .now
+        recordID = UUID()
+        lastCheckpoint = .now
         finished = false
     }
 
@@ -64,8 +72,18 @@ final class WorkoutRecorder {
                 continue
             }
             for cue in coach.evaluate(frame, tracker: tracker) { onLocalCue?(cue) }
-            if frame.state == .ended { finish() }
+            if frame.state == .ended { return finish() }
         }
+        checkpoint()
+    }
+
+    /// Saves the open workout so far, at most once per `checkpointInterval`.
+    private func checkpoint() {
+        guard !finished, let startedAt, Date.now.timeIntervalSince(lastCheckpoint ?? .distantPast) >= Self.checkpointInterval,
+              let record = tracker.record(id: recordID, startedAt: startedAt, endedAt: .now, lines: lines)
+        else { return }
+        lastCheckpoint = .now
+        store.save(record)
     }
 
     func addLine(_ text: String, source: CoachLine.Source) {
@@ -91,7 +109,7 @@ final class WorkoutRecorder {
     func finish() {
         guard !finished else { return }
         finished = true
-        guard let startedAt, let record = tracker.record(startedAt: startedAt, endedAt: .now, lines: lines) else {
+        guard let startedAt, let record = tracker.record(id: recordID, startedAt: startedAt, endedAt: .now, lines: lines) else {
             diag("recorder", "finish: nothing to save (running samples \(tracker.samples), lines \(lines.count))")
             return
         }

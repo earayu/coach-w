@@ -566,9 +566,9 @@ docs/                文档
 - 心率、位置是健康和隐私数据。服务端只在会话内存里使用，第一版不持久化；日志里不打指标原值和坐标。
 - 指标会随工具结果发给模型厂商（DashScope），这是实时教练的前提。坐标不发：`get_metrics` 不返回 `lat` / `lon`，服务端的窗口、分段、摘要、cue 都不含坐标（有单元测试），`coach.resume` 也不带坐标。
 - GPS（M4）：手表把轨迹存进 Apple 健康（随 workout），最新坐标随指标帧经 iPhone 转给服务端，只在会话内存里；手表、iPhone、服务端都不打印坐标。
-- 本机运动记录（M4）：iPhone 在 Application Support 下每次运动存一个 JSON（指标摘要、每公里用时、教练说过的话和用户说过的话（服务端转写的最终句，2026-11-22 COCH-13 起），不含坐标），文件保护级别 `completeUntilFirstUserAuthentication`，只在本机，可在记录列表里左滑删除。
+- 本机运动记录（M4）：iPhone 在 Application Support 下每次运动存一个 JSON（指标摘要、每公里用时、教练说过的话和用户说过的话（服务端转写的最终句，2026-11-22 COCH-13 起），不含坐标），文件保护级别 `completeUntilFirstUserAuthentication`，只在本机，可在记录列表里左滑删除。运动中每分钟存一次进度（同一个文件覆盖），镜像会话断开 2 分钟内手表没有重新镜像就在手机上结束并保存：结束信号没传到手机时记录也不丢（2026-11-22 COCH-15，一小时跑步结束时镜像断开、记录全丢）。
 - 日志只记 `athlete_id` 和房间名，不记名字、邀请码、指标值；坏帧只记错误类型。iPhone 和手表各自在 Application Support/diagnostics 下留一份诊断日志（`apple/Shared/Diagnostics.swift`，每份不超过 512 KB，保留一份旧的）：按钮点击、workout / 镜像 / 语音状态变化和耗时，不含指标值、坐标和对话文本；iPhone 可在设置里分享，也可用 `xcrun devicectl device copy from` 拉取。LiveKit Agents 在 DEBUG 级别会打印对话文本（可能含说出口的心率），所以 Agent 在本机和生产都用 INFO 级别。
-- 对话全文记录（2026-11-22，维护者要求，COCH-13）：服务端 Agent 把每个会话的完整对话按 JSON Lines 写到 `COACHW_TRANSCRIPT_DIR`（生产为 docker 卷 `transcripts`，`<日期>/<房间>.jsonl`，类型 `user` 用户说的话 / `coach` 教练说的话 / `cue` 教练系统的主动提示），不设该变量则不记。iPhone 也把每句对话（不论有没有在运动）按天追加到本机 Application Support/conversations/`<日期>.jsonl`。对话文本可能含说出口的心率等数字，所以只留在主机和手机本地，不入库、不进日志；指标流本身仍不落盘。
+- 对话全文记录（2026-11-22，维护者要求，COCH-13）：服务端 Agent 把每个会话的完整对话按 JSON Lines 写到 `COACHW_TRANSCRIPT_DIR`（生产为 docker 卷 `transcripts`，`<日期>/<房间>.jsonl`，类型 `user` 用户说的话 / `coach` 教练说的话 / `cue` 教练系统的主动提示），不设该变量则不记。iPhone 也把每句对话（不论有没有在运动）按天追加到本机 Application Support/conversations/`<日期>.jsonl`。对话文本可能含说出口的心率等数字，所以只留在主机和手机本地，不入库、不进日志；指标流本身仍不落盘。记录开启时系统提示词告诉教练对话会保存给开发团队看，用户口述产品意见时教练回答"记下了"并复述要点；关闭时教练如实说记不下来（COCH-15）。
 - 客户端不持有模型 Key。LiveKit token 短期有效、限定房间。
 - 仓库公开：不提交任何凭据、`.env`、个人数据、真实运动记录。测试样例使用合成数据。
 
