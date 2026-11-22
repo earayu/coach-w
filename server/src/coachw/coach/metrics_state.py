@@ -290,17 +290,22 @@ class MetricsState:
         if not self._samples:
             return None
         since = self._samples[-1].elapsed_s - seconds
-        points = [
-            (s.elapsed_s, s.values[name])
-            for s in self._samples
-            if s.elapsed_s > since and name in s.values
-        ]
-        if len(points) < MIN_WINDOW_SAMPLES:
+        # newest first, stopping at the window's start: rules ask for short windows every second
+        values: list[float] = []
+        first = last = None
+        for s in reversed(self._samples):
+            if s.elapsed_s <= since:
+                break
+            if (v := s.values.get(name)) is not None:
+                values.append(v)
+                first = s.elapsed_s
+                if last is None:
+                    last = s.elapsed_s
+        if len(values) < MIN_WINDOW_SAMPLES or first is None or last is None:
             return None
-        span = points[-1][0] - points[0][0]
+        span = last - first
         if span < seconds * MIN_WINDOW_COVERAGE:
             return None
-        values = [v for _, v in points]
         return WindowStats(
             mean=sum(values) / len(values),
             min=min(values),
