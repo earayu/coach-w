@@ -155,3 +155,16 @@ import Testing
     #expect(ReconnectPolicy.drop(forHTTPStatus: 502) == .network)
     #expect(ReconnectPolicy.drop(forHTTPStatus: 0) == .network)
 }
+
+@Test func localCoachJoiningMidWorkoutDoesNotAnnounceWhatAlreadyPassed() {
+    var w = SynthWorkout(config: .init(timeMarkS: 600))
+    // the phone app was relaunched 25 minutes into the run
+    w.elapsed = 1500
+    w.distance = 4500
+    w.run(600, speed: 3)
+    // the 10- and 20-minute marks and kilometres 1-4 passed before the relaunch
+    #expect(w.kinds == ["split:5", "time:3", "split:6"])
+    // the fifth kilometre started before the phone saw the run: no made-up time for it
+    #expect(w.cues[0].speech == "第 5 公里，继续保持。")
+    #expect(w.cues[2].speech == "第 6 公里，这一公里用时 5 分 33 秒。")
+}

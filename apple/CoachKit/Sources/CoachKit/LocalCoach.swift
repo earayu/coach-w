@@ -67,7 +67,13 @@ public struct LocalCoach: Sendable {
     private var splitsAnnounced = 0
     private var marksAnnounced = 0
     private var endAnnounced = false
+    private var primed = false
+    private var firstTimedSplit = 1
     private var nextID = 1
+
+    /// A coach whose first frame is later than this joined a workout under way (the app was
+    /// relaunched mid-workout): what already passed is not announced.
+    static let joinedLateAfterS: Double = 60
 
     public init(config: Config = Config()) {
         self.config = config
@@ -75,6 +81,18 @@ public struct LocalCoach: Sendable {
 
     /// Call after `tracker.ingest(frame)` accepted the frame.
     public mutating func evaluate(_ frame: MetricsFrame, tracker: WorkoutTracker) -> [LocalCue] {
+        if !primed {
+            primed = true
+            if frame.elapsedS > Self.joinedLateAfterS {
+                // the tracker interpolated the early kilometres from the start: not real splits
+                if let every = config.splitKm, every > 0 {
+                    splitsAnnounced = tracker.kmMarks.count / every
+                    // the split under way started before this coach saw the workout: not timed
+                    firstTimedSplit = splitsAnnounced + 2
+                }
+                if let mark = config.timeMarkS, mark > 0 { marksAnnounced = Int(frame.elapsedS / mark) }
+            }
+        }
         if frame.state == .ended {
             guard !endAnnounced, tracker.samples > 0 else { return [] }
             endAnnounced = true
@@ -115,10 +133,10 @@ public struct LocalCoach: Sendable {
         let end = tracker.kmMarks[km - 1]
         let start = km > every ? tracker.kmMarks[km - every - 1] : 0
         let span = every == 1 ? "这一公里" : "这 \(every) 公里"
-        return make(
-            frame, .milestone, "split:\(count)", .success, "第 \(km) 公里",
-            "第 \(km) 公里，\(span)用时 \(Spoken.duration(end - start))。"
-        )
+        let speech = count < firstTimedSplit
+            ? "第 \(km) 公里，继续保持。"
+            : "第 \(km) 公里，\(span)用时 \(Spoken.duration(end - start))。"
+        return make(frame, .milestone, "split:\(count)", .success, "第 \(km) 公里", speech)
     }
 
     private mutating func timeMark(_ frame: MetricsFrame) -> LocalCue? {
