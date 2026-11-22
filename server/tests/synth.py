@@ -26,12 +26,13 @@ def frame(
     *,
     activity: str = "running",
     state: WorkoutState = WorkoutState.RUNNING,
+    base_ms: int = T0_MS,
     **metrics: float | None,
 ) -> MetricsFrame:
     return MetricsFrame(
         v=PROTOCOL_VERSION,
         seq=seq,
-        ts=T0_MS + int(elapsed * 1000) + seq,
+        ts=base_ms + int(elapsed * 1000) + seq,
         activity=activity,
         state=state,
         elapsed_s=elapsed,
@@ -58,6 +59,12 @@ class Runner:
         self.elapsed = 0.0
         self.distance = 0.0
         self.energy = 0.0
+        self.base_ms = T0_MS
+
+    def new_workout(self) -> None:
+        """The next workout on the watch: its time starts over, the wall clock does not."""
+        self.base_ms += int(self.elapsed * 1000) + 60_000
+        self.elapsed = self.distance = self.energy = 0.0
 
     def send(self, state: WorkoutState = WorkoutState.RUNNING, **metrics: float | None) -> None:
         self.seq += 1
@@ -67,6 +74,7 @@ class Runner:
                 self.elapsed,
                 activity=self.activity,
                 state=state,
+                base_ms=self.base_ms,
                 distance_m=self.distance,
                 **metrics,
             )

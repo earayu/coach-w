@@ -266,3 +266,23 @@ def test_rejected_target_pace_changes_nothing():
     assert tool("adjust_target_pace", {"pace_min": 0, "pace_sec": 0, "goal_km": -1})["ok"] is False
     assert tool("adjust_target_pace", {"pace_min": 1, "pace_sec": -60})["ok"] is False
     assert s.brain.targets == before
+
+
+def test_the_next_workout_in_the_same_voice_session_starts_fresh():
+    s = Session()
+    s.run.run(400)
+    s.run.run(2, state=WorkoutState.ENDED)
+    s.run.new_workout()
+    s.run.run(30)
+    assert s.kinds().count("start") == 2
+    assert s.brain.state.elapsed_s == 30 and s.brain.state.started
+    assert s.brain.state.distance_m == pytest.approx(90)
+
+
+def test_a_new_workout_is_noticed_even_when_the_end_frame_was_lost():
+    s = Session()
+    s.run.run(400)
+    s.run.new_workout()
+    s.run.run(30)
+    assert s.kinds().count("start") == 2
+    assert s.brain.state.elapsed_s == 30

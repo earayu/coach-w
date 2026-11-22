@@ -30,6 +30,9 @@ from coachw.protocol import (
 
 QUIET_MAX_MIN = 30
 
+# Workout time going back by more than this (on a newer frame) means a new workout started.
+NEW_WORKOUT_REWIND_S = 5.0
+
 # Cues the watch also buzzes for. Companion chat stays in the ear only.
 WATCH_PRIORITIES = (CuePriority.EMERGENCY, CuePriority.CORRECTION, CuePriority.MILESTONE)
 
@@ -87,14 +90,27 @@ class CoachBrain:
     # -- input ---------------------------------------------------------------------------------
 
     def on_frame(self, frame: MetricsFrame) -> bool:
-        if self.profile is None or frame.activity not in self.profile.activity_types:
-            if self.state.latest and (frame.ts, frame.seq) <= (
-                self.state.latest.ts,
-                self.state.latest.seq,
-            ):
-                return False
+        latest = self.state.latest
+        if latest and (frame.ts, frame.seq) <= (latest.ts, latest.seq):
+            return False
+        if (
+            self.profile is None
+            or frame.activity not in self.profile.activity_types
+            or self._starts_new_workout(latest, frame)
+        ):
             self._load(self._profiles(frame.activity))
         return self.state.update(frame)
+
+    @staticmethod
+    def _starts_new_workout(latest: MetricsFrame | None, frame: MetricsFrame) -> bool:
+        """The voice session outlives a workout: the next one must not inherit its state (its
+        samples were ignored until their time passed the old workout's, and start never fired)."""
+        if latest is None:
+            return False
+        if latest.state is WorkoutState.ENDED:
+            return frame.state is not WorkoutState.ENDED
+        # the end frame was lost: workout time only runs backwards when a new workout began
+        return frame.elapsed_s + NEW_WORKOUT_REWIND_S < latest.elapsed_s
 
     def _load(self, profile: ActivityProfile) -> None:
         """A new activity starts a fresh coaching state; quiet mode carries over."""
