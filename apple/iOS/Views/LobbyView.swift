@@ -8,6 +8,7 @@ struct LobbyView: View {
     let isConfigured: Bool
     let lastRecord: WorkoutRecord?
     let lastError: String?
+    var isStartingWatch = false
     let onStartWatch: () -> Void
     let onConnectVoice: () -> Void
     let onToggleMute: () -> Void
@@ -89,14 +90,23 @@ struct LobbyView: View {
 
     private var primaryActionSection: some View {
         VStack(spacing: 10) {
-            Button(action: onStartWatch) {
+            Button {
+                diag("phone-ui", "start on watch tapped: \(selectedActivity.wireName)")
+                onStartWatch()
+            } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: "applewatch.radiowaves.left.and.right")
-                        .font(.title3.weight(.bold))
-                    Text("在手表上开始 · \(selectedActivity.title)")
+                    if isStartingWatch {
+                        ProgressView().tint(PulseTheme.obsidianMid)
+                        Text("正在启动手表 · \(selectedActivity.title)")
+                    } else {
+                        Image(systemName: "applewatch.radiowaves.left.and.right")
+                            .font(.title3.weight(.bold))
+                        Text("在手表上开始 · \(selectedActivity.title)")
+                    }
                 }
             }
             .buttonStyle(PulsePrimaryButtonStyle())
+            .disabled(isStartingWatch)
 
             Text("Apple Watch 采集与保存运动，iPhone 实时显示并驱动语音教练")
                 .font(.caption)

@@ -142,6 +142,7 @@ struct ContentView: View {
                 isConfigured: settings.isConfigured,
                 lastRecord: recorder.lastRecord,
                 lastError: mirror.lastError,
+                isStartingWatch: mirror.isStartingWatch,
                 onStartWatch: { Task { await mirror.startOnWatch(activity) } },
                 onConnectVoice: { Task { await voice.start(settings: settings) } },
                 onToggleMute: { Task { await voice.toggleMute() } },

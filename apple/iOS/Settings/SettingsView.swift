@@ -21,6 +21,7 @@ struct SettingsView: View {
                         serverCard
                         inviteCodeCard
                         athleteIDCard
+                        diagnosticsCard
                     }
                     .padding(.horizontal, 18)
                     .padding(.top, 12)
@@ -236,6 +237,31 @@ struct SettingsView: View {
                 .background(PulseTheme.obsidianMid.opacity(0.75), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
 
             Text("首次安装随机生成的匿名标识，仅用于服务端区分会话，不含个人姓名。")
+                .font(.caption)
+                .foregroundStyle(PulseTheme.textTertiary)
+        }
+        .padding(16)
+        .pulseCard(cornerRadius: 20)
+    }
+
+    private var diagnosticsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("诊断日志", systemImage: "doc.text.magnifyingglass")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(PulseTheme.textPrimary)
+                Spacer()
+                ShareLink(item: Diagnostics.shared.contents(), preview: SharePreview("coach-w 诊断日志")) {
+                    Label("分享", systemImage: "square.and.arrow.up")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(PulseTheme.volt)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 5)
+                        .background(PulseTheme.volt.opacity(0.14), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            Text("记录按钮点击、运动与语音状态的变化，用于排查「点了没反应」。不含心率、位置和对话内容。")
                 .font(.caption)
                 .foregroundStyle(PulseTheme.textTertiary)
         }

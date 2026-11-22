@@ -40,6 +40,8 @@ struct ContentView: View {
                 activity: workout.activity ?? .other,
                 frame: workout.latest,
                 isRunning: workout.isRunning,
+                isFinishing: workout.isFinishing,
+                lastError: workout.lastError,
                 cue: workout.cue,
                 onPause: { workout.pause() },
                 onResume: { workout.resume() },
@@ -49,6 +51,7 @@ struct ContentView: View {
             StartView(
                 lastError: workout.lastError,
                 onStart: { activity in
+                    diag("watch-ui", "start button tapped: \(activity.wireName)")
                     Task { await workout.start(activity) }
                 }
             )
@@ -66,6 +69,8 @@ struct ContentView: View {
                 activity: .running,
                 frame: WatchPreviewFixtures.sampleFrame,
                 isRunning: true,
+                isFinishing: false,
+                lastError: nil,
                 cue: nil,
                 onPause: {},
                 onResume: {},
@@ -76,6 +81,8 @@ struct ContentView: View {
                 activity: .running,
                 frame: WatchPreviewFixtures.sampleFrame,
                 isRunning: true,
+                isFinishing: false,
+                lastError: nil,
                 cue: WatchPreviewFixtures.sampleCue,
                 onPause: {},
                 onResume: {},
@@ -177,6 +184,8 @@ private struct ActiveWorkoutView: View {
     let activity: WorkoutActivity
     let frame: MetricsFrame?
     let isRunning: Bool
+    let isFinishing: Bool
+    let lastError: String?
     let cue: CoachCue?
     let onPause: () -> Void
     let onResume: () -> Void
@@ -195,7 +204,7 @@ private struct ActiveWorkoutView: View {
                     Image(systemName: activity.symbol)
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(PulseTheme.mint)
-                    Text(paused ? "已暂停" : activity.title)
+                    Text(isFinishing ? "正在保存…" : paused ? "已暂停" : activity.title)
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(paused ? PulseTheme.amber : PulseTheme.textSecondary)
                     if frame?.lat != nil {
@@ -270,6 +279,13 @@ private struct ActiveWorkoutView: View {
                 }
                 .padding(.vertical, 2)
 
+                if let lastError {
+                    Text(lastError)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(PulseTheme.coral)
+                        .lineLimit(2)
+                }
+
                 Spacer(minLength: 2)
 
                 // High-contrast dual circular controls
@@ -280,7 +296,10 @@ private struct ActiveWorkoutView: View {
                         foreground: isRunning ? PulseTheme.amber : PulseTheme.obsidianMid,
                         background: isRunning ? PulseTheme.amber.opacity(0.24) : PulseTheme.volt,
                         border: isRunning ? PulseTheme.amber.opacity(0.75) : PulseTheme.volt,
-                        action: isRunning ? onPause : onResume
+                        action: {
+                            diag("watch-ui", "\(isRunning ? "pause" : "resume") button tapped")
+                            (isRunning ? onPause : onResume)()
+                        }
                     )
 
                     watchCircleControl(
@@ -289,7 +308,10 @@ private struct ActiveWorkoutView: View {
                         foreground: PulseTheme.coral,
                         background: PulseTheme.coral.opacity(0.24),
                         border: PulseTheme.coral.opacity(0.75),
-                        action: onEnd
+                        action: {
+                            diag("watch-ui", "end button tapped")
+                            onEnd()
+                        }
                     )
                 }
                 .frame(maxWidth: .infinity)

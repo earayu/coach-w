@@ -47,7 +47,12 @@ final class VoiceSession: NSObject {
         }
     }
 
-    private(set) var status: Status = .idle
+    private(set) var status: Status = .idle {
+        didSet {
+            let new = String(describing: status), old = String(describing: oldValue)
+            if new != old { diag("voice", "\(old) -> \(new)") }
+        }
+    }
     private(set) var isMuted = false
     private(set) var isCoachSpeaking = false
     /// LiveKit hears the user's microphone right now: shows the user the coach can hear them.
@@ -60,6 +65,8 @@ final class VoiceSession: NSObject {
     @ObservationIgnored var onCue: (@MainActor (CoachCue) -> Void)?
     /// Called with each finished line the coach said (agent transcript).
     @ObservationIgnored var onCoachLine: (@MainActor (String) -> Void)?
+    /// Called with each final transcript of what the user said, so feedback given by voice is kept.
+    @ObservationIgnored var onUserLine: (@MainActor (String) -> Void)?
     /// Called once each time an established link drops and offline fallback takes over.
     @ObservationIgnored var onLinkLost: (@MainActor () -> Void)?
     /// Called each time a session is connected and its microphone is live.
@@ -91,7 +98,10 @@ final class VoiceSession: NSObject {
     @ObservationIgnored private let micMeter = MicMeter()
 
     func start(settings: AppSettings) async {
-        guard !isActive else { return }
+        guard !isActive else {
+            diag("voice", "start ignored: already \(String(describing: status))")
+            return
+        }
         AudioManager.shared.remove(localAudioRenderer: micMeter)
         AudioManager.shared.add(localAudioRenderer: micMeter)
         MicMeter.logAudioState("before connect")
@@ -108,6 +118,7 @@ final class VoiceSession: NSObject {
     }
 
     func stop() async {
+        diag("voice", "stop requested")
         generation += 1
         retryTask?.cancel()
         retryTask = nil
@@ -295,12 +306,14 @@ final class VoiceSession: NSObject {
         let id = ObjectIdentifier(room)
         do {
             try await room.registerTextStreamHandler(for: Self.transcriptionTopic) { [weak self] reader, sender in
-                // the agent also publishes the user's own words, under the user's identity
-                guard sender != me else { return }
+                // the agent also publishes the user's own words, under the user's identity: interim
+                // guesses first, then one final segment
+                let isUser = sender == me
+                if isUser, reader.info.attributes["lk.transcription_final"] != "true" { return }
                 let text = try await reader.readAll()
                 await MainActor.run {
                     guard let self, self.isCurrent(id) else { return }
-                    self.onCoachLine?(text)
+                    if isUser { self.onUserLine?(text) } else { self.onCoachLine?(text) }
                 }
             }
         } catch {

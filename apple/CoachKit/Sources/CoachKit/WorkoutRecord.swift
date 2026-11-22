@@ -1,12 +1,14 @@
 import Foundation
 
-/// Something the coach said during a workout, kept in the local record.
+/// One line of the workout conversation, kept in the local record.
 public struct CoachLine: Codable, Equatable, Sendable, Identifiable {
     public enum Source: String, Codable, Sendable {
         /// The voice coach (server), from the agent's transcript.
         case coach
         /// The phone's own offline announcement (docs/spec.md 7.4).
         case local
+        /// The user's own words, from the agent's transcript of their speech.
+        case athlete
     }
 
     public var id: UUID

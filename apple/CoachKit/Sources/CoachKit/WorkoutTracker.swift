@@ -39,9 +39,11 @@ public struct WorkoutTracker: Sendable {
     public var hasEnded: Bool { latest?.state == .ended }
 
     /// Takes `frame` if it is newer than the last one. Returns false for late or repeated frames.
+    /// Ordered by the watch clock, then `seq`, like the server: a relaunched watch app numbers its
+    /// frames from 1 again, and ordering by `seq` alone dropped the rest of the workout.
     @discardableResult
     public mutating func ingest(_ frame: MetricsFrame) -> Bool {
-        if let latest, frame.seq <= latest.seq { return false }
+        if let latest, (frame.ts, frame.seq) <= (latest.ts, latest.seq) { return false }
         var frame = frame
         // the last reading stays meaningful when a frame happens to lack it (e.g. the final one)
         if frame.energyKcal == nil { frame.energyKcal = latest?.energyKcal }

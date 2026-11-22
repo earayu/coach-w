@@ -18,6 +18,9 @@ final class MirrorReceiver: NSObject {
     private(set) var latest: MetricsFrame?
     private(set) var stats = FrameStats()
     private(set) var lastError: String?
+    /// Between "start on watch" and the watch's session arriving here; drives the button state.
+    private(set) var isStartingWatch = false
+    @ObservationIgnored private var startAttempt = 0
 
     @ObservationIgnored private var session: HKWorkoutSession?
     /// Start of the workout being shown: a re-attached session with the same start continues it.
@@ -49,14 +52,39 @@ final class MirrorReceiver: NSObject {
 
     /// Launches the watch app and asks it to start the workout; the session then mirrors back here.
     func startOnWatch(_ activity: WorkoutActivity) async {
+        diag("phone", "start on watch requested: \(activity.wireName), state \(state.label), session \(session != nil)")
+        guard !isStartingWatch else {
+            diag("phone", "ignoring start: already waiting for the watch")
+            return
+        }
         lastError = nil
+        isStartingWatch = true
+        startAttempt += 1
+        let attempt = startAttempt
+        let began = Date()
         do {
             try await healthStore.startWatchApp(toHandle: activity.configuration())
+            diag("phone", "startWatchApp returned after \(Self.ms(since: began)) ms; waiting for the watch to mirror")
         } catch {
+            diag("phone", "startWatchApp failed after \(Self.ms(since: began)) ms: \(Self.describe(error))")
             log.error("startWatchApp failed: \(error.localizedDescription)")
             lastError = "无法从手机启动手表：\(error.localizedDescription)\n请抬腕解锁手表，或直接在手表上打开 coach-w 开始，手机会自动接上。"
+            isStartingWatch = false
+            return
         }
+        // A successful call only means the request reached the watch. If its session never
+        // arrives, the button used to look dead (COCH-13): say so after a while.
+        try? await Task.sleep(for: Self.attachTimeout)
+        guard attempt == startAttempt, isStartingWatch else { return }
+        isStartingWatch = false
+        diag("phone", "no mirrored session \(Self.attachTimeout) after startWatchApp")
+        lastError = "手表没有开始运动。请抬腕看看手表上的 coach-w：如果还停在上一场运动，先在手表上结束它；也可以直接在手表上开始。"
     }
+
+    /// How long the phone waits for the watch's session after asking it to start.
+    static let attachTimeout: Duration = .seconds(20)
+
+    static func ms(since date: Date) -> Int { Int((Date().timeIntervalSince(date) * 1000).rounded()) }
 
     /// Forwards a coach cue to the watch over the mirrored session; expired cues are dropped.
     func sendToWatch(_ cue: CoachCue) {
@@ -78,13 +106,13 @@ final class MirrorReceiver: NSObject {
     static let endTimeout: Duration = .seconds(5)
 
     func pause() {
-        log.info("pause requested, state \(self.state.rawValue, privacy: .public)")
+        diag("phone", "pause requested, state \(state.label), session \(session != nil)")
         guard let session else { return lostWatch() }
         session.pause()
     }
 
     func resume() {
-        log.info("resume requested, state \(self.state.rawValue, privacy: .public)")
+        diag("phone", "resume requested, state \(state.label), session \(session != nil)")
         guard let session else { return lostWatch() }
         session.resume()
     }
@@ -97,7 +125,7 @@ final class MirrorReceiver: NSObject {
     /// phone stuck on the dashboard (COCH-12): then the phone closes the workout itself. The watch
     /// still owns and saves the HealthKit workout.
     func end() {
-        log.info("end requested, state \(self.state.rawValue, privacy: .public)")
+        diag("phone", "end requested, state \(state.label), session \(session.map { $0.state.label } ?? "none")")
         guard let session else {
             close(error: "手表已断开，已在手机上结束本次记录。手表上的运动请在手表上结束。")
             return
@@ -106,12 +134,13 @@ final class MirrorReceiver: NSObject {
         Task { [weak self] in
             try? await Task.sleep(for: Self.endTimeout)
             guard let self, self.session === session, self.state != .ended else { return }
-            log.error("watch did not confirm the end; closing the workout on the phone")
+            diag("phone", "watch did not confirm the end within \(Self.endTimeout) (state \(self.state.label)); closing on the phone")
             self.close(error: "手表没有响应，已在手机上结束。手表上的运动请在手表上结束。")
         }
     }
 
     private func close(error: String?) {
+        diag("phone", "workout closed on the phone\(error == nil ? "" : " with a message")")
         session?.delegate = nil
         session = nil
         state = .ended
@@ -124,9 +153,8 @@ final class MirrorReceiver: NSObject {
         // comes back (measured on device 2026-11-22: ~15 s later). That is not a new workout: keep
         // its record and numbers going.
         let continuing = isActive && sessionStart != nil && mirrored.startDate == sessionStart
-        log.info(
-            "mirrored session attached, state \(mirrored.state.rawValue, privacy: .public), continuing \(continuing, privacy: .public)"
-        )
+        diag("phone", "mirrored session attached, state \(mirrored.state.label), continuing \(continuing)")
+        isStartingWatch = false
         session = mirrored
         mirrored.delegate = self
         state = mirrored.state
@@ -141,9 +169,9 @@ final class MirrorReceiver: NSObject {
 
     private func receive(_ frames: [MetricsFrame]) {
         if let latest, latest.isStale(at: .now), let silence = latest.silence(at: .now) {
-            log.info("frames resumed after \(Int(silence), privacy: .public)s of silence")
+            diag("phone", "frames resumed after \(Int(silence))s of silence")
         }
-        if latest == nil { log.info("first frame received") }
+        if latest == nil { diag("phone", "first frame received") }
         for frame in frames {
             stats.record(frame)
             if frame.isNewer(than: latest) { latest = frame }
@@ -160,7 +188,7 @@ final class MirrorReceiver: NSObject {
         case .running where state == .paused: state = .running
         case .paused where state == .running: state = .paused
         case .ended where isActive:
-            log.info("watch reports the workout ended")
+            diag("phone", "watch reports the workout ended")
             close(error: nil)
         default: break
         }
@@ -174,7 +202,7 @@ extension MirrorReceiver: HKWorkoutSessionDelegate {
         from fromState: HKWorkoutSessionState,
         date: Date
     ) {
-        log.info("mirrored state \(fromState.rawValue, privacy: .public) -> \(toState.rawValue, privacy: .public)")
+        diag("phone", "mirrored state \(fromState.label) -> \(toState.label)")
         Task { @MainActor in
             guard self.session === workoutSession else { return }
             self.state = toState
@@ -187,14 +215,14 @@ extension MirrorReceiver: HKWorkoutSessionDelegate {
 
     nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
         let message = error.localizedDescription
-        log.error("mirrored session failed: \(Self.describe(error), privacy: .public)")
+        diag("phone", "mirrored session failed: \(Self.describe(error))")
         Task { @MainActor in self.lastError = message }
     }
 
     nonisolated func workoutSession(
         _ workoutSession: HKWorkoutSession, didDisconnectFromRemoteDeviceWithError error: Error?
     ) {
-        log.error("mirrored session disconnected: \(error.map(Self.describe) ?? "no error", privacy: .public)")
+        diag("phone", "mirrored session disconnected: \(error.map(Self.describe) ?? "no error")")
         // This session will not answer pause or end any more. Keep the dashboard (the watch may
         // mirror again, which hands over a new session), but let "end" close it on the phone.
         let message = error?.localizedDescription ?? "unknown"
@@ -224,5 +252,20 @@ extension MirrorReceiver: HKWorkoutSessionDelegate {
             return frame
         }
         Task { @MainActor in self.receive(frames) }
+    }
+}
+
+extension HKWorkoutSessionState {
+    /// For diagnostics.
+    var label: String {
+        switch self {
+        case .notStarted: "notStarted"
+        case .prepared: "prepared"
+        case .running: "running"
+        case .paused: "paused"
+        case .stopped: "stopped"
+        case .ended: "ended"
+        @unknown default: "unknown(\(rawValue))"
+        }
     }
 }

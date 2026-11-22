@@ -25,6 +25,16 @@ import Testing
     #expect(w.tracker.maxHrBpm == 150)
 }
 
+@Test func trackerFollowsARelaunchedWatchThatNumbersFromOneAgain() {
+    var w = SynthWorkout()
+    w.run(20)
+    // the watch app was relaunched mid-workout: seq restarts, its clock keeps going
+    w.seq = 0
+    w.run(10)
+    #expect(w.tracker.samples == 30)
+    #expect(w.tracker.elapsedS == 30)
+}
+
 @Test func trackerResumeSummarisesWithoutCoordinates() throws {
     var w = SynthWorkout()
     w.run(400, speed: 1000 / 300.0, hr: 150, lat: 39.9)

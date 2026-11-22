@@ -47,4 +47,17 @@ extension HKWorkoutSessionState {
     }
 
     var isActive: Bool { self != .notStarted && self != .ended }
+
+    /// For diagnostics.
+    var label: String {
+        switch self {
+        case .notStarted: "notStarted"
+        case .prepared: "prepared"
+        case .running: "running"
+        case .paused: "paused"
+        case .stopped: "stopped"
+        case .ended: "ended"
+        @unknown default: "unknown(\(rawValue))"
+        }
+    }
 }

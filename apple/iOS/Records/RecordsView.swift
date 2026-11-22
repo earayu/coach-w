@@ -385,8 +385,7 @@ struct RecordDetailView: View {
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(record.lines.enumerated()), id: \.element.id) { index, line in
-                        let isCoach = line.source == .coach
-                        let accent = isCoach ? PulseTheme.mint : PulseTheme.amber
+                        let accent = line.source.accent
                         HStack(alignment: .top, spacing: 12) {
                             VStack(spacing: 0) {
                                 Circle()
@@ -405,10 +404,7 @@ struct RecordDetailView: View {
 
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack(spacing: 6) {
-                                    Label(
-                                        isCoach ? "语音教练" : "本机播报",
-                                        systemImage: isCoach ? "waveform" : "iphone"
-                                    )
+                                    Label(line.source.title, systemImage: line.source.symbol)
                                     .font(.caption2.weight(.bold))
                                     .foregroundStyle(accent)
 
@@ -468,5 +464,31 @@ struct RecordDetailView: View {
             items.append(.init(id: "power", title: "平均功率", symbol: "bolt.fill", value: Format.value(power, unit: "W"), accent: PulseTheme.volt))
         }
         return items
+    }
+}
+
+private extension CoachLine.Source {
+    var title: String {
+        switch self {
+        case .coach: "语音教练"
+        case .local: "本机播报"
+        case .athlete: "我"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .coach: "waveform"
+        case .local: "iphone"
+        case .athlete: "person.fill"
+        }
+    }
+
+    var accent: Color {
+        switch self {
+        case .coach: PulseTheme.mint
+        case .local: PulseTheme.amber
+        case .athlete: PulseTheme.volt
+        }
     }
 }

@@ -51,8 +51,11 @@ struct WorkoutDashboardView: View {
             controlDock
         }
         .confirmationDialog("结束本次\(activity.title)？", isPresented: $confirmEnd, titleVisibility: .visible) {
-            Button("结束并保存记录", role: .destructive, action: onEnd)
-            Button("继续运动", role: .cancel) {}
+            Button("结束并保存记录", role: .destructive) {
+                diag("phone-ui", "end confirmed")
+                onEnd()
+            }
+            Button("继续运动", role: .cancel) { diag("phone-ui", "end cancelled") }
         } message: {
             Text("手表将保存本次运动到 Apple 健康，本机同步生成跑后总结。")
         }
@@ -484,7 +487,10 @@ struct WorkoutDashboardView: View {
 
     private var controlDock: some View {
         HStack(spacing: 12) {
-            Button(action: isRunning ? onPause : onResume) {
+            Button {
+                diag("phone-ui", "\(isRunning ? "pause" : "resume") tapped")
+                (isRunning ? onPause : onResume)()
+            } label: {
                 Label(
                     isRunning ? "暂停运动" : "继续运动",
                     systemImage: isRunning ? "pause.fill" : "play.fill"
@@ -514,6 +520,7 @@ struct WorkoutDashboardView: View {
             .buttonStyle(.plain)
 
             Button {
+                diag("phone-ui", "end tapped")
                 confirmEnd = true
             } label: {
                 Label("结束", systemImage: "stop.fill")

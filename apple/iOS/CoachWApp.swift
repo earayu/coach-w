@@ -6,6 +6,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        diag("phone", "app launched, build \(build)")
         let mirror = MirrorReceiver.shared, voice = VoiceSession.shared, recorder = WorkoutRecorder.shared
         mirror.install()
         mirror.onSessionStarted = { recorder.begin($0) }
@@ -16,6 +18,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
         voice.onCue = { mirror.sendToWatch($0) }
         voice.onCoachLine = { recorder.addLine($0, source: .coach) }
+        voice.onUserLine = { recorder.addLine($0, source: .athlete) }
         voice.resumeProvider = { recorder.resume() }
         voice.onLinkLost = {
             guard recorder.isRecording else { return }

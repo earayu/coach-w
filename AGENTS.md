@@ -21,6 +21,7 @@ coach-w 是一个实时语音运动教练：Apple Watch 采集运动指标，iPh
 - `apple/Watch/HealthReadings.swift`：HealthKit 统计 → 线协议单位
 - `apple/iOS/MirrorReceiver.swift`：iPhone 接镜像会话、解帧、统计；`sendToWatch` 把 `coach.cue` 转给手表
 - `apple/Shared/DesignSystem.swift`：Pulse W 暗黑运动设计系统（曜石背景渐变、电光黄绿至薄荷绿渐变、心率区间色板、`PulseWMark` 徽标、毛玻璃卡片与按钮样式）
+- `apple/Shared/Diagnostics.swift`：手机和手表各自的本机诊断日志（按钮点击、workout / 镜像 / 语音状态与耗时，不含指标值、坐标、对话），排查"点了没反应"先拉它
 - `apple/Shared/WorkoutActivity.swift`：UI 可选运动与 HealthKit / 线协议的映射表（含展示文案、是否开 GPS、速度读法、手机本地兜底的分段长度）、HealthKit 权限类型
 - `apple/iOS/Views/`：`LobbyView`（开跑大厅、运动类型卡片选择器、语音教练预览卡与"刚刚完成"入口）、`WorkoutDashboardView`（运动仪表盘：顶部声波状态条、核心英雄卡、心率区间卡、自适应次级指标网格、折叠式数据流诊断抽屉、底部防误触控制栏）
 - `apple/iOS/Components/PulseVoiceComponents.swift`：从 `VoiceSession` 派生的视图状态（`VoiceVisualState`）与动态声波动画组件（`VoiceWaveView`、`CoachStatusPill`），UI 层不接触 LiveKit 类型

@@ -23,6 +23,7 @@ final class WorkoutRecorder {
     @ObservationIgnored private var coach = LocalCoach()
     @ObservationIgnored private var startedAt: Date?
     @ObservationIgnored private var finished = true
+    @ObservationIgnored private var dropped = 0
     /// The coach's closing summary comes after the final frame: lines keep landing in the saved
     /// record until then.
     @ObservationIgnored private var lateLinesUntil: Date?
@@ -37,18 +38,27 @@ final class WorkoutRecorder {
 
     /// A mirrored workout session started on the watch.
     func begin(_ activity: WorkoutActivity) {
+        if !finished { diag("recorder", "new workout while one was still open; the open one is dropped") }
+        diag("recorder", "begin \(activity.wireName)")
         tracker = WorkoutTracker()
         coach = LocalCoach(config: activity.offlineCoach)
         lines = []
         lastRecord = nil
         lateLinesUntil = nil
+        dropped = 0
         startedAt = .now
         finished = false
     }
 
     func ingest(_ frames: [MetricsFrame]) {
         guard !finished else { return }
-        for frame in frames.sorted(by: { $0.seq < $1.seq }) where tracker.ingest(frame) {
+        for frame in frames.sorted(by: { ($0.ts, $0.seq) < ($1.ts, $1.seq) }) {
+            guard tracker.ingest(frame) else {
+                dropped += 1
+                // first one and then one in 60: shows a stream the tracker keeps rejecting
+                if dropped % 60 == 1 { diag("recorder", "ignoring an older frame (\(dropped) so far)") }
+                continue
+            }
             for cue in coach.evaluate(frame, tracker: tracker) { onLocalCue?(cue) }
             if frame.state == .ended { finish() }
         }
@@ -78,8 +88,10 @@ final class WorkoutRecorder {
         guard !finished else { return }
         finished = true
         guard let startedAt, let record = tracker.record(startedAt: startedAt, endedAt: .now, lines: lines) else {
+            diag("recorder", "finish: nothing to save (running samples \(tracker.samples), lines \(lines.count))")
             return
         }
+        diag("recorder", "finish: saved record, \(Int(record.durationS))s, \(record.lines.count) lines")
         store.save(record)
         lastRecord = record
         lateLinesUntil = .now + Self.lateLinesWindow
