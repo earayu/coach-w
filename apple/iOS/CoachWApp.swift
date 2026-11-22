@@ -17,8 +17,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             voice.send(frames)
         }
         voice.onCue = { mirror.sendToWatch($0) }
-        voice.onCoachLine = { recorder.addLine($0, source: .coach) }
-        voice.onUserLine = { recorder.addLine($0, source: .athlete) }
+        let conversation = ConversationLog.shared
+        voice.onCoachLine = {
+            conversation.append($0, source: .coach)
+            recorder.addLine($0, source: .coach)
+        }
+        voice.onUserLine = {
+            conversation.append($0, source: .athlete)
+            recorder.addLine($0, source: .athlete)
+        }
         voice.resumeProvider = { recorder.resume() }
         voice.onLinkLost = {
             guard recorder.isRecording else { return }
@@ -31,6 +38,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             guard voice.needsLocalFallback, !local.cue.isExpired(at: .now) else { return }
             LocalSpeaker.shared.speak(local.speech, urgent: local.cue.priority == .emergency)
             mirror.sendToWatch(local.cue)
+            conversation.append(local.speech, source: .local)
             recorder.addLine(local.speech, source: .local)
         }
         return true

@@ -11,7 +11,8 @@ COPY src ./src
 RUN uv sync --locked --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
-RUN useradd --system --uid 10001 coachw
+RUN useradd --system --uid 10001 coachw \
+    && mkdir -p /data/transcripts && chown coachw /data/transcripts
 USER coachw
 
 CMD ["python", "-m", "coachw.api"]

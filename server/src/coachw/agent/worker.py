@@ -17,6 +17,7 @@ from livekit.agents import AgentServer, AgentSession, JobContext, cli
 
 from coachw.agent.coach import GREETING, SESSION_CAP_FAREWELL, CoachAgent
 from coachw.agent.loop import CoachLoop
+from coachw.agent.transcript import Transcript, transcript_dir
 from coachw.coach.brain import CoachBrain
 from coachw.profiles.base import Athlete
 from coachw.protocol import (
@@ -178,6 +179,10 @@ async def entrypoint(ctx: JobContext) -> None:
     agent = CoachAgent(brain)
     turns = TurnLog()
     turns.attach(session)
+    if (directory := transcript_dir()) is not None:
+        transcript = Transcript(directory, room=ctx.room.name, athlete_id=meta.athlete_id)
+        transcript.attach(session)
+        logger.info("keeping the transcript in %s", transcript.path.name)
 
     async def log_summary() -> None:
         logger.info(turns.summary(inbox.frames))

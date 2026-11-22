@@ -56,7 +56,15 @@ services:
     <<: *server
     command: ["python", "-m", "coachw.agent", "start"]
     depends_on: [livekit]
+    environment:
+      LIVEKIT_URL: ws://127.0.0.1:7880
+      LIVEKIT_PUBLIC_URL: wss://${COACHW_DOMAIN:?set COACHW_DOMAIN in deploy/.env}
+      # full conversation transcripts, one JSONL per session (docs/spec.md 11)
+      COACHW_TRANSCRIPT_DIR: ${COACHW_TRANSCRIPT_DIR-/data/transcripts}
+    volumes:
+      - transcripts:/data/transcripts
 
 volumes:
+  transcripts:
   caddy_data:
   caddy_config:

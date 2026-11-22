@@ -69,6 +69,7 @@ To exercise the 7881/TCP fallback, drop UDP from your own address on the host fo
 - **Invite someone / change minutes:** edit `COACHW_INVITES` in `.env`, then `docker compose up -d api`. Restarting the API forgets today's used minutes (in-memory, spec 3.1).
 - **Resources:** `docker stats --no-stream`. On 2 vCPU / 4 GB with `COACHW_AGENT_IDLE_PROCESSES=2` the agent uses about 500 MB (idle and during one session), the other three containers about 130 MB together.
 - **Logs:** `docker compose logs -f agent api`; each container keeps at most 5 × 10 MB. Logs carry `athlete_id` and room names only; no names, invite codes or metric values (spec 11). Keep the agent at the default INFO level: DEBUG logs conversation text.
+- **Transcripts:** the agent keeps every conversation, one JSON Lines file per session, in the `transcripts` volume (`/data/transcripts/<YYYY-MM-DD>/<room>.jsonl`; types `user`, `coach`, `cue`). Read them with `docker compose exec agent sh -c 'tail -n +1 /data/transcripts/$(date -u +%F)/*.jsonl'`. They are conversation text and may contain spoken numbers such as heart rate: they stay on the host, never in the repo. Set `COACHW_TRANSCRIPT_DIR=` (empty) in `.env` to turn them off.
 - **Secrets** live only in `deploy/.env` on the host. Never commit it.
 
 ## Not done yet
