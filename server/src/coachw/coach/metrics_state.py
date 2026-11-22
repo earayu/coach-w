@@ -49,6 +49,9 @@ TOOL_FIELDS = (
     "alt_m",
 )
 
+# Totals that do not change while the workout is paused.
+STABLE_FIELDS = ("activity", "state", "elapsed_s", "distance_m", "energy_kcal")
+
 # A session that first sees the workout later than this (voice joined or reconnected mid-workout)
 # did not witness the start: the split in progress is not timed and the start is not announced.
 JOINED_AT_START_S = 60.0
@@ -346,6 +349,14 @@ class MetricsState:
         if self._latest is None:
             return {"available": False, "reason": "no metrics received from the watch yet"}
         age_s = round(self.age_s() or 0.0, 1)
+        if age_s > self.stale_after_s and not self.is_running:
+            # a paused (or ended) watch sends no heartbeat: its totals still hold, live readings
+            # such as heart rate are old and left out
+            data = self._latest.to_dict()
+            out = {"available": True, "age_s": age_s, "live_readings": False}
+            out |= {k: data[k] for k in STABLE_FIELDS if k in data}
+            out["state"] = str(out["state"])
+            return out
         if age_s > self.stale_after_s:
             return {
                 "available": False,

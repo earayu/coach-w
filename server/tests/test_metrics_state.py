@@ -135,3 +135,15 @@ def test_joined_at_start():
     state, run, _ = setup()
     run.run(5)
     assert state.joined_at_start and state.first_elapsed_s == 1
+
+
+def test_a_long_pause_still_reports_totals_but_no_old_live_readings():
+    state, run, clock = setup()
+    run.run(100, hr=150)
+    run.run(1, state=WorkoutState.PAUSED, hr=150)
+    clock.advance(120)  # the watch sends no heartbeat while paused
+    snap = state.snapshot()
+    assert snap["available"] is True and snap["live_readings"] is False
+    assert snap["state"] == "paused" and snap["elapsed_s"] == 100
+    assert snap["distance_m"] == pytest.approx(300)
+    assert "hr_bpm" not in snap and "pace_per_km" not in snap

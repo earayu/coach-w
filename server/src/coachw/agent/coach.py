@@ -109,6 +109,7 @@ class CoachAgent(Agent):
         """获取用户手表上最新的运动数据：心率、配速、距离、用时、步频、功率等。
 
         用户问到任何运动数据时必须先调用本工具。没有出现在结果里的指标表示手表这次没有测到。
+        live_readings 为 false 表示运动暂停或已结束：只有用时、距离等总计，心率等实时数据要等继续后才有。
         """
         result = self.brain.get_metrics()
         # values are health data: log only that the tool ran (spec 11)
