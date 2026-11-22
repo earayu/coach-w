@@ -22,6 +22,7 @@ def test_classify_tells_the_athlete_from_system_prompts():
     assert classify("user", "我有点累") == "user"
     assert classify("user", "【教练提示】第 1 公里") == "cue"
     assert classify("user", "【运动状态】热身") == "status"
+    assert classify("user", "【运动状态，仅供参考，不要回复】运动：跑步") == "status"
     assert classify("system", "x") is None
     assert classify(None, "x") is None
 
