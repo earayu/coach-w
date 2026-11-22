@@ -17,6 +17,8 @@ webhook:
     - http://127.0.0.1:8000/livekit/webhook
 room:
   empty_timeout: 60
+  # keep the room (and the coach's conversation) while a phone on mobile data reconnects
+  departure_timeout: 120
 turn:
   # TURN/TLS on 443 needs a second domain and a layer-4 proxy; added only if mobile tests need it
   enabled: false

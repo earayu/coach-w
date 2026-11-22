@@ -6,6 +6,7 @@ from coachw.coach.events import (
     RuleContext,
     SplitTrend,
     Sustained,
+    WindowPair,
     WindowVsBaseline,
     WindowVsTarget,
 )
@@ -186,3 +187,32 @@ def test_split_trend_needs_every_step():
     for pace in (300, 330, 335, 336):
         run.run(pace, speed=1000 / pace)
     assert evaluate(DRIFT, state) == []
+
+
+BIKE_AS_RUN = WindowPair(
+    kind="not_running",
+    field="speed_mps",
+    at_least=2.5,
+    other="cadence_spm",
+    at_most=120,
+    window_s=60,
+    alert=ALERT,
+    facts=lambda v, c: f"{v:.1f} m/s at {c:.0f} spm",
+)
+
+
+def test_window_pair_needs_both_readings_to_contradict():
+    state, run, _ = setup()
+    run.run(90, speed=3.8, cadence=170)  # a fast run
+    assert evaluate(BIKE_AS_RUN, state) == []
+    run.run(90, speed=1.2, cadence=100)  # a walk
+    assert evaluate(BIKE_AS_RUN, state) == []
+    run.run(90, speed=3.8, cadence=72)  # a bike recorded as a run
+    [event] = evaluate(BIKE_AS_RUN, state)
+    assert event.facts == "3.8 m/s at 72 spm"
+
+
+def test_window_pair_is_silent_without_the_second_sensor():
+    state, run, _ = setup()
+    run.run(90, speed=3.8, cadence=None)
+    assert evaluate(BIKE_AS_RUN, state) == []

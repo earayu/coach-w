@@ -88,6 +88,8 @@ def test_valid_invite_gets_scoped_token(client: TestClient, clock: Clock):
     assert not claims.video.room_create
     assert not claims.video.room_admin
     assert [a.agent_name for a in claims.room_config.agents] == [AGENT_NAME]
+    # the coach and its conversation outlive a phone reconnecting on mobile data
+    assert claims.room_config.departure_timeout >= 90
     assert SessionMeta.from_json(claims.metadata) == SessionMeta(ATHLETE, 20 * 60)
     # names stay on the server
     assert "Alice" not in json.dumps(body) and "Alice" not in claims.metadata

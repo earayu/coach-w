@@ -3,7 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from coachw.coach.events import SplitTrend, Sustained, WindowVsBaseline, WindowVsTarget
+from coachw.coach.events import SplitTrend, Sustained, WindowPair, WindowVsBaseline, WindowVsTarget
+from coachw.coach.metrics_state import Split
 from coachw.profiles.base import Mode
 from coachw.profiles.cycling import CYCLING
 from coachw.profiles.fallback import FALLBACK
@@ -51,6 +52,27 @@ def test_running_profile_covers_the_p0_rules():
     assert isinstance(rules["cadence_drop"], WindowVsBaseline)
     assert isinstance(rules["gct_rise"], WindowVsBaseline)
     assert rules["hr_emergency"].alert.key == rules["hr_ceiling"].alert.key
+    assert isinstance(rules["not_running_cadence"], WindowPair)
+    assert isinstance(rules["not_running_speed"], Sustained)
+    assert rules["not_running_cadence"].alert.key == rules["not_running_speed"].alert.key
+
+
+@pytest.mark.parametrize(
+    ("duration_s", "cadence", "praised"),
+    [
+        (330, 172, True),  # 5'30" on foot
+        (480, 95, True),  # slow jog / walk: low cadence fits the pace
+        (262, 72, False),  # COCH-15: 4'22" at 72 steps a minute is a bike
+        (140, None, False),  # faster than the world record
+    ],
+)
+def test_running_splits_are_only_praised_when_a_runner_could_do_them(
+    duration_s: float, cadence: float | None, praised: bool
+):
+    means = {"hr_bpm": 127.0} | ({} if cadence is None else {"cadence_spm": cadence})
+    facts = RUNNING.split_facts(Split(3, 3000, 900, duration_s, means))
+    assert ("鼓励" in facts) is praised
+    assert ("骑车" in facts) is not praised
 
 
 def test_running_profile_shape():

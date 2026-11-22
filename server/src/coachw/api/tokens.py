@@ -18,6 +18,9 @@ class IssuedToken:
     token: str
 
 
+DEPARTURE_TIMEOUT_S = 120
+
+
 def new_room_name() -> str:
     return f"coach-{secrets.token_hex(8)}"
 
@@ -55,6 +58,10 @@ def issue_token(
                 agents=[api.RoomAgentDispatch(agent_name=AGENT_NAME)],
                 max_participants=2,
                 empty_timeout=60,
+                # The phone drops off on mobile data and comes back after 30-90 s (COCH-15). With
+                # LiveKit's default of 20 s the room, the coach and the whole conversation were
+                # gone by then and a fresh coach greeted the athlete again.
+                departure_timeout=DEPARTURE_TIMEOUT_S,
             )
         )
         .to_jwt()
