@@ -54,7 +54,15 @@ def test_unknown_fields_are_ignored():
 
 @pytest.mark.parametrize(
     "patch",
-    [{"v": 2}, {"state": "sprinting"}],
+    [
+        {"v": 2},
+        {"state": "sprinting"},
+        {"ts": "1763726400000"},
+        {"seq": True},
+        {"hr_bpm": "150"},
+        {"elapsed_s": float("nan")},
+        {"speed_mps": float("inf")},
+    ],
 )
 def test_rejects_bad_frames(patch: dict):
     with pytest.raises(ProtocolError):

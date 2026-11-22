@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import math
 from dataclasses import asdict, dataclass, field, fields
 from enum import StrEnum
 from typing import Any
@@ -65,6 +66,15 @@ class MetricsFrame:
             values["state"] = WorkoutState(values["state"])
         except ValueError as e:
             raise ProtocolError(f"unknown workout state {values['state']!r}") from e
+        # A frame with a mistyped field used to be taken as the newest one, and every later frame
+        # then failed to compare against it: the session went deaf to the watch.
+        for name in ("seq", "ts", "phone_ts"):
+            if values.get(name) is not None:
+                values[name] = int(_number(values[name], name))
+        values["activity"] = str(values["activity"])
+        for name in _FRAME_NUMBERS:
+            if values.get(name) is not None:
+                values[name] = _number(values[name], name)
         return cls(**values)
 
     @classmethod
@@ -160,9 +170,27 @@ class CoachCue:
         return now_ms >= self.expires_at
 
 
+_FRAME_NUMBERS = (
+    "elapsed_s",
+    "hr_bpm",
+    "distance_m",
+    "speed_mps",
+    "cadence_spm",
+    "power_w",
+    "stride_m",
+    "gct_ms",
+    "vo_cm",
+    "energy_kcal",
+    "lat",
+    "lon",
+    "alt_m",
+)
+
+
 def _number(value: Any, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ProtocolError(f"{name} must be a number")
+    # Python's json accepts NaN and Infinity; one of them would poison every mean it reaches
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise ProtocolError(f"{name} must be a finite number")
     return float(value)
 
 
