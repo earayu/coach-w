@@ -6,7 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from coachw.agent.coach import INSTRUCTIONS
+from coachw.agent.coach import (
+    INSTRUCTIONS,
+    SESSION_CAP_FAREWELL,
+    SESSION_LENGTH_FAREWELL,
+    cap_farewell,
+)
 from coachw.agent.worker import (
     AthleteInbox,
     TurnLog,
@@ -163,6 +168,12 @@ def test_cap_says_goodbye_then_closes_the_room():
 
     asyncio.run(end_when_cap_reached(Ctx(), Session(), 0))
     assert calls == ["farewell", "playout", "delete_room", "shutdown"]
+
+
+def test_farewell_only_blames_the_day_when_the_day_cut_the_session_short():
+    assert cap_farewell(3600, 3600) == SESSION_LENGTH_FAREWELL
+    assert cap_farewell(900, 3600) == SESSION_CAP_FAREWELL
+    assert "用完" in SESSION_CAP_FAREWELL and "重新连接" in SESSION_LENGTH_FAREWELL
 
 
 def test_prompt_forbids_guessing_numbers():

@@ -15,7 +15,7 @@ from typing import Any
 from livekit import rtc
 from livekit.agents import AgentServer, AgentSession, JobContext, cli
 
-from coachw.agent.coach import GREETING, SESSION_CAP_FAREWELL, CoachAgent
+from coachw.agent.coach import GREETING, SESSION_CAP_FAREWELL, CoachAgent, cap_farewell
 from coachw.agent.loop import CoachLoop
 from coachw.agent.transcript import Transcript, transcript_dir
 from coachw.coach.brain import CoachBrain
@@ -44,12 +44,17 @@ server = AgentServer(
 )
 
 
+def session_max_s() -> int:
+    """The per-session maximum the token API also uses (same environment)."""
+    return int(os.environ.get("COACHW_SESSION_MAX_MINUTES", "60")) * 60
+
+
 def read_session_meta(participant: rtc.RemoteParticipant) -> SessionMeta:
     """Session limits signed by the token API. Fall back to the local default when absent."""
     try:
         return SessionMeta.from_json(participant.metadata)
     except (ValueError, KeyError, TypeError):
-        fallback = int(os.environ.get("COACHW_SESSION_MAX_MINUTES", "60")) * 60
+        fallback = session_max_s()
         logger.warning("participant has no valid session metadata; using %ds cap", fallback)
         return SessionMeta(athlete_id="unknown", max_session_s=fallback)
 
@@ -150,13 +155,13 @@ async def greeting_for(brain: CoachBrain, inbox: AthleteInbox) -> str:
     return brain.resume_greeting() or GREETING
 
 
-async def end_when_cap_reached(ctx: JobContext, session: AgentSession, seconds: int) -> None:
+async def end_when_cap_reached(
+    ctx: JobContext, session: AgentSession, seconds: int, farewell: str = SESSION_CAP_FAREWELL
+) -> None:
     await asyncio.sleep(seconds)
     logger.info("session cap reached after %ds", seconds)
     with contextlib.suppress(Exception):
-        handle = session.generate_reply(
-            instructions=SESSION_CAP_FAREWELL, allow_interruptions=False
-        )
+        handle = session.generate_reply(instructions=farewell, allow_interruptions=False)
         await asyncio.wait_for(handle.wait_for_playout(), timeout=20)
     await ctx.delete_room()
     ctx.shutdown("session cap reached")
@@ -198,7 +203,8 @@ async def entrypoint(ctx: JobContext) -> None:
         )
 
     await session.start(room=ctx.room, agent=agent)
-    cap = asyncio.create_task(end_when_cap_reached(ctx, session, meta.max_session_s))
+    farewell = cap_farewell(meta.max_session_s, session_max_s())
+    cap = asyncio.create_task(end_when_cap_reached(ctx, session, meta.max_session_s, farewell))
     ctx.add_shutdown_callback(lambda: _cancel(cap))
     logger.info("coach session started, cap %ds", meta.max_session_s)
 

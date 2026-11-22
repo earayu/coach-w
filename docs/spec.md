@@ -93,7 +93,7 @@ erDiagram
 - `POST /v1/session`，请求体 `{invite_code, athlete_id}`（`athlete_id` 必须是 UUID）。成功返回 `{server_url, room, token, token_expires_at, max_session_s}`；未知邀请码 401，`athlete_id` 不合法 422，当日分钟不足 429（见下）。
 - token：每次新建一个房间 `coach-<随机>`，只能加入这个房间；identity 是 `athlete_id`；有效期 `COACHW_TOKEN_TTL_S`（默认 10 分钟，只管"多久内能加入"）；房间配置里 dispatch 教练 Agent（`coach-w`），最多 2 个参与者。participant metadata 里签入 `{athlete_id, max_session_s}`，客户端改不了。
 - 分钟上限按邀请码（即按人）计，"一天"按 `COACHW_QUOTA_TZ`（默认 Asia/Shanghai）。签发 token 时预占本次会话上限 `min(当日剩余, COACHW_SESSION_MAX_MINUTES)`，剩余不足 `COACHW_MIN_SESSION_S`（默认 60 秒）时返回 429。LiveKit webhook（`participant_joined` / `participant_left`，只在本机回环地址可达）把预占结算成实际在房间里的时长；token 过期仍未加入的预占自动释放。并发拿多个 token 也不会超额。同一 `athlete_id` 再次申请（断线重连、加入失败后重试）时，它之前的会话不再按预占计，只计实际在房间里的时长：手机同一时间只有一路语音，LiveKit 还没察觉断线的旧会话不能让重连因"分钟用完"失败（会话上限等于每日分钟时必现）。
-- 会话时长上限由 Agent 执行：到 `max_session_s` 时说一句告别，然后删除房间。
+- 会话时长上限由 Agent 执行：到 `max_session_s` 时说一句告别，然后删除房间。只有上限被当日剩余分钟压低（小于 `COACHW_SESSION_MAX_MINUTES`）时才说"今天的时长用完了"；单次会话到顶时说"这一次的时长到了，可以重新连接"。
 - **计数只在 API 进程内存里，进程重启当日用量清零。** 几个人用时可以接受；开放注册时随账号表一起换成数据库。
 
 **必须守住的接缝：**
