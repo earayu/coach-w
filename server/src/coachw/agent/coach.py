@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from livekit.agents import Agent, RunContext, function_tool, llm
@@ -26,7 +26,8 @@ INSTRUCTIONS = """\
 - 认真回应用户说的每一件事。跑步、训练、身体感受、装备、天气或者随便闲聊，都正常、有内容地回答，不要用"专心运动"之类的话把问题挡回去。
 - 记住这次对话里用户说过的话。用户让你复述、回忆或者问"我刚才说了什么"，就照这次对话的内容把他的原意复述出来。
 - 不要把同一句话说两遍；上一句没有回答到点子上，就换个说法直接回答。
-- 做不到的事直说做不到，并说清楚现在能做什么。你拿不到用户的位置、地图和周边信息，不要说自己看得到 GPS 或轨迹。
+- 做不到的事直说做不到，并说清楚现在能做什么。
+- 用户问自己在哪、附近有什么、去哪找厕所或补给、前面是什么地方时，调用 look_around（可以带要找的东西），照结果里的地名、距离和方向回答；没有结果就直说找不到，不要编地名。
 
 用常识看数据：
 - 你懂运动生理和训练常识，知道跑步、骑行、步行等运动正常的配速或速度、步频、心率大概什么样，以及它们之间怎么关联。
@@ -123,16 +124,22 @@ def profile_tool(brain: CoachBrain, spec: ProfileTool) -> llm.RawFunctionTool:
     )
 
 
+# Asks the athlete's phone what is around them (`coach.places`, spec 7.5); returns its JSON.
+PlaceLookup = Callable[[str], Awaitable[dict[str, Any]]]
+
+
 class CoachAgent(Agent):
     def __init__(
         self,
         brain: CoachBrain,
         keeps_transcript: bool = False,
         history: Sequence[tuple[str, str]] = (),
+        places: PlaceLookup | None = None,
     ) -> None:
         self._instructions = instructions(keeps_transcript, history)
         super().__init__(instructions=self._instructions)
         self.brain = brain
+        self._places = places
         self._base_tools = list(self.tools)
         self._status_id: str | None = None
 
@@ -196,4 +203,21 @@ class CoachAgent(Agent):
         """
         result = self.brain.end_workout_summary()
         logger.info("tool end_workout_summary called available=%s", result["available"])
+        return as_json(result)
+
+    @function_tool()
+    async def look_around(self, context: RunContext, query: str = "") -> str:
+        """查用户现在在哪、附近有什么：当前所在的街道或地点，以及附近的地点名称、距离（米）和方向。
+
+        用户问"我在哪"、"附近有什么"、"哪里有厕所 / 便利店 / 补水点"、"前面是什么地方"时调用。
+
+        Args:
+            query: 要找的东西，例如"厕所"、"便利店"；只想知道在哪、附近有什么时传空字符串。
+        """
+        if self._places is None:
+            result: dict[str, Any] = {"available": False, "reason": "phone not connected"}
+        else:
+            result = await self._places(query.strip())
+        # places and addresses are location data: log only the outcome (spec 11)
+        logger.info("tool look_around called available=%s", result.get("available"))
         return as_json(result)

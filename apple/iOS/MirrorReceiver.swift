@@ -20,6 +20,9 @@ final class MirrorReceiver: NSObject {
     private(set) var lastError: String?
     /// Between "start on watch" and the watch's session arriving here; drives the button state.
     private(set) var isStartingWatch = false
+    /// The watch took the start request but its data has not arrived yet. Mirroring took about a
+    /// minute on device (COCH-15) while the watch was already running: show the workout meanwhile.
+    private(set) var awaitingActivity: WorkoutActivity?
     @ObservationIgnored private var startAttempt = 0
 
     @ObservationIgnored private var session: HKWorkoutSession?
@@ -65,6 +68,7 @@ final class MirrorReceiver: NSObject {
         do {
             try await healthStore.startWatchApp(toHandle: activity.configuration())
             diag("phone", "startWatchApp returned after \(Self.ms(since: began)) ms; waiting for the watch to mirror")
+            if attempt == startAttempt, isStartingWatch { awaitingActivity = activity }
         } catch {
             diag("phone", "startWatchApp failed after \(Self.ms(since: began)) ms: \(Self.describe(error))")
             log.error("startWatchApp failed: \(error.localizedDescription)")
@@ -77,12 +81,13 @@ final class MirrorReceiver: NSObject {
         try? await Task.sleep(for: Self.attachTimeout)
         guard attempt == startAttempt, isStartingWatch else { return }
         isStartingWatch = false
+        awaitingActivity = nil
         diag("phone", "no mirrored session \(Self.attachTimeout) after startWatchApp")
         lastError = "手表没有开始运动。请抬腕看看手表上的 coach-w：如果还停在上一场运动，先在手表上结束它；也可以直接在手表上开始。"
     }
 
     /// How long the phone waits for the watch's session after asking it to start.
-    static let attachTimeout: Duration = .seconds(20)
+    static let attachTimeout: Duration = .seconds(120)
 
     static func ms(since date: Date) -> Int { Int((Date().timeIntervalSince(date) * 1000).rounded()) }
 
@@ -127,7 +132,9 @@ final class MirrorReceiver: NSObject {
     func end() {
         diag("phone", "end requested, state \(state.label), session \(session.map { $0.state.label } ?? "none")")
         guard let session else {
-            close(error: "手表已断开，已在手机上结束本次记录。手表上的运动请在手表上结束。")
+            close(error: awaitingActivity != nil
+                ? "手机不再等手表的数据。手表上已经开始的运动请在手表上结束。"
+                : "手表已断开，已在手机上结束本次记录。手表上的运动请在手表上结束。")
             return
         }
         session.stopActivity(with: .now)
@@ -141,6 +148,8 @@ final class MirrorReceiver: NSObject {
 
     private func close(error: String?) {
         diag("phone", "workout closed on the phone\(error == nil ? "" : " with a message")")
+        isStartingWatch = false
+        awaitingActivity = nil
         session?.delegate = nil
         session = nil
         state = .ended
@@ -155,6 +164,7 @@ final class MirrorReceiver: NSObject {
         let continuing = isActive && sessionStart != nil && mirrored.startDate == sessionStart
         diag("phone", "mirrored session attached, state \(mirrored.state.label), continuing \(continuing)")
         isStartingWatch = false
+        awaitingActivity = nil
         session = mirrored
         mirrored.delegate = self
         state = mirrored.state

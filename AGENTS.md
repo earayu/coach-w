@@ -26,6 +26,8 @@ coach-w 是一个实时语音运动教练：Apple Watch 采集运动指标，iPh
 - `apple/iOS/Views/`：`LobbyView`（开跑大厅、运动类型卡片选择器、语音教练预览卡与"刚刚完成"入口）、`WorkoutDashboardView`（运动仪表盘：顶部声波状态条、核心英雄卡、心率区间卡、自适应次级指标网格、折叠式数据流诊断抽屉、底部防误触控制栏）
 - `apple/iOS/Components/PulseVoiceComponents.swift`：从 `VoiceSession` 派生的视图状态（`VoiceVisualState`）与动态声波动画组件（`VoiceWaveView`、`CoachStatusPill`），UI 层不接触 LiveKit 类型
 - `apple/iOS/Voice/VoiceSession.swift`：唯一引用 LiveKit 的文件；连房间（带代数防 start/stop 竞态）、开麦、按序把指标帧发到 `coach.metrics`、收 `coach.cue`、跟踪教练说话态（`isCoachSpeaking`）；断线自动重连（`ReconnectPolicy` 退避 + `NWPathMonitor`；RPC 心跳 `coach.ping` 约 10 秒发现死链路）、发 `coach.resume`、收 `lk.transcription` 教练文字。`TokenClient.swift`：调 token API。`LocalSpeaker.swift`：断网时 `AVSpeechSynthesizer` 本机播报
+- `apple/iOS/Places/PlaceFinder.swift`：教练 `look_around` 工具的手机端（RPC `coach.places`），Apple 地图查所在街道和附近地点
+- `apple/iOS/Voice/OfflineVoiceRecorder.swift`：断网时录麦克风，连回后在手机上转写并发给教练（`lk.chat`）
 - `apple/iOS/Records/`：`WorkoutRecorder`（跟踪当前运动、本地兜底 cue、续接摘要、结束时存记录）、`WorkoutStore`（本机 JSON 记录）、`RecordsView`（记录列表、分段柱状图与教练对话时间线详情）；接线在 `CoachWApp.swift`
 - `apple/iOS/Settings/`：`AppSettings.swift`（`athlete_id`、邀请码钥匙串、token API 地址）与 `SettingsView.swift`（暗色分组设置页、服务器校验状态、邀请码显隐切换与运动者 ID 复制）
 - `apple/CoachKit`：`MetricsFrame`、`CoachCue`、`CoachResume`（线协议）、`FrameBuilder`（合并读数、节流、推算步频、GPS）、`FrameStats`（收端统计）、`ServerAddress`（设置里的服务器地址校验）、`WorkoutTracker`（手机端跟踪运动：公里时刻、均值）、`LocalCoach`（断网兜底规则）、`ReconnectPolicy`、`WorkoutRecord`
@@ -45,7 +47,7 @@ coach-w 是一个实时语音运动教练：Apple Watch 采集运动指标，iPh
 3. **时机由确定性代码决定，表达交给模型。** 主动说话由 Director / EventEngine / CueQueue 决定，不让模型自己决定什么时候开口（spec 4.2）。
 4. **通用内核不出现运动类型分支。** 跑步、骑行等差异只写在运动档案里（spec 第 5 节）。
 5. **客户端不持有模型 Key。** iOS / watchOS 只拿服务端签发的短期 LiveKit token。
-6. **健康数据最小化。** 心率、位置只在会话内存中使用；日志不打指标原值和坐标；仓库不提交真实运动记录。例外（维护者 2026-11-22 要求）：对话全文记录在服务端 `COACHW_TRANSCRIPT_DIR` 和手机本地（spec 11），不进日志、不入库。
+6. **健康数据最小化。** 心率、位置只在会话内存中使用；日志不打指标原值和坐标；仓库不提交真实运动记录。例外（维护者 2026-11-22 要求）：对话全文记录在服务端 `COACHW_TRANSCRIPT_DIR` 和手机本地（spec 11），不进日志、不入库。断网时的录音只存在手机本地，转写后删除（spec 7.4）；周边地点在手机上用 Apple 地图查，只把地名、距离、方向给教练（spec 7.5）。
 
 改动会触及这些约束时，停下来先和维护者确认。
 

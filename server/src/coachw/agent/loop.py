@@ -43,6 +43,10 @@ class Agent(Protocol):
     async def inject_status(self, text: str) -> None: ...
 
 
+class Writer(Protocol):
+    async def instructions_for(self, delivery: Delivery) -> str: ...
+
+
 class CoachLoop:
     def __init__(
         self,
@@ -51,7 +55,9 @@ class CoachLoop:
         session: Session,
         publish_cue: Callable[[CoachCue], Awaitable[None]],
         clock: Callable[[], float] = time.monotonic,
+        writer: Writer | None = None,
     ) -> None:
+        self.writer = writer
         self.brain = brain
         self.agent = agent
         self.session = session
@@ -96,16 +102,21 @@ class CoachLoop:
             # the speech playing may refuse interruption; the emergency then waits behind it
             with contextlib.suppress(RuntimeError):
                 self.session.interrupt()
+        # A stronger text model may write the line first (spec 4.2.1); it falls back by itself.
+        text = (
+            await self.writer.instructions_for(delivery) if self.writer else delivery.instructions
+        )
         # As a user-role text turn, not `instructions=`: Qwen ignores mid-conversation system
         # items and answers the last user turn instead (measured, spec 14.1).
-        self.session.generate_reply(user_input=delivery.instructions)
+        self.session.generate_reply(user_input=text)
         logger.info(
-            "cue released id=%s kind=%s priority=%s interrupt=%s watch=%s",
+            "cue released id=%s kind=%s priority=%s interrupt=%s watch=%s written=%s",
             cue.id,
             cue.event.kind,
             cue.priority,
             delivery.interrupt,
             delivery.watch is not None,
+            text != delivery.instructions,
         )
         if delivery.watch:
             try:

@@ -55,6 +55,21 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(apiBaseURL.trimmedForSettings, forKey: "api_base_url") }
     }
 
+    /// Developer setting (testing phase, spec 4.2.1): the text model that writes the coach's
+    /// cues before the realtime model speaks them; "" lets the realtime model speak alone.
+    var cueWriter: String {
+        didSet { UserDefaults.standard.set(cueWriter, forKey: "cue_writer") }
+    }
+
+    /// What the server offers (`server/src/coachw/session.py` DEFAULT_WRITER_MODELS).
+    static let cueWriters: [(id: String, title: String, detail: String)] = [
+        ("", "实时模型直接说", "最快，但不太会结合常识看数据"),
+        ("qwen3.8-flash", "Qwen3.8 Flash 先写稿", "约慢 1 秒，懂常识"),
+        ("qwen3.8-max", "Qwen3.8 Max 先写稿", "约慢 1.5 秒，最懂常识"),
+        ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash 先写稿", "约慢 0.6 秒"),
+    ]
+    static let defaultCueWriter = "qwen3.8-flash"
+
     var trimmedInviteCode: String { inviteCode.trimmedForSettings }
 
     /// Only `http` / `https` with a host counts as configured.
@@ -78,6 +93,7 @@ final class AppSettings {
         }
         inviteCode = (Keychain.get("invite_code") ?? "").trimmedForSettings
         apiBaseURL = (UserDefaults.standard.string(forKey: "api_base_url") ?? "").trimmedForSettings
+        cueWriter = UserDefaults.standard.string(forKey: "cue_writer") ?? Self.defaultCueWriter
         #if DEBUG
         // Development builds can be configured at launch, e.g.
         // `xcrun devicectl device process launch --environment-variables '{"COACHW_API_BASE_URL": "..."}'`

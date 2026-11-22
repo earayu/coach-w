@@ -21,6 +21,7 @@ struct SettingsView: View {
                         serverCard
                         inviteCodeCard
                         athleteIDCard
+                        developerCard
                         diagnosticsCard
                     }
                     .padding(.horizontal, 18)
@@ -237,6 +238,65 @@ struct SettingsView: View {
                 .background(PulseTheme.obsidianMid.opacity(0.75), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
 
             Text("首次安装随机生成的匿名标识，仅用于服务端区分会话，不含个人姓名。")
+                .font(.caption)
+                .foregroundStyle(PulseTheme.textTertiary)
+        }
+        .padding(16)
+        .pulseCard(cornerRadius: 20)
+    }
+
+    /// Testing-phase switches (COCH-15); to be removed once the choices are settled.
+    private var developerCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("开发者选项", systemImage: "hammer.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(PulseTheme.textPrimary)
+                Spacer()
+                Text("测试阶段")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(PulseTheme.amber)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(PulseTheme.amber.opacity(0.14), in: Capsule())
+            }
+            Text("教练主动播报怎么写")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(PulseTheme.textSecondary)
+            VStack(spacing: 8) {
+                ForEach(AppSettings.cueWriters, id: \.id) { option in
+                    let selected = settings.cueWriter == option.id
+                    Button {
+                        settings.cueWriter = option.id
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                                .foregroundStyle(selected ? PulseTheme.volt : PulseTheme.textTertiary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(option.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(PulseTheme.textPrimary)
+                                Text(option.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(PulseTheme.textTertiary)
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(
+                            PulseTheme.obsidianMid.opacity(selected ? 0.95 : 0.6),
+                            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                .strokeBorder(selected ? PulseTheme.volt.opacity(0.5) : PulseTheme.surfaceStroke, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Text("「先写稿」：每条主动播报先由更聪明的文本模型结合常识和最近的对话写好，再由语音模型说出来；安全提醒不经过它，照常立刻说。你问教练问题时还是语音模型直接回答。结束语音再重新连接后生效。")
                 .font(.caption)
                 .foregroundStyle(PulseTheme.textTertiary)
         }

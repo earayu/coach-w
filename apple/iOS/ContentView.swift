@@ -92,6 +92,7 @@ struct ContentView: View {
             #endif
             if settings.autoConnect, settings.isConfigured { await voice.start(settings: settings) }
             await mirror.requestAuthorization()
+            PlaceFinder.shared.requestPermission()
         }
     }
 
@@ -99,7 +100,7 @@ struct ContentView: View {
         #if DEBUG
         if uiPreview == .active { return true }
         #endif
-        return mirror.isActive
+        return mirror.isActive || mirror.awaitingActivity != nil
     }
 
     private var showRootToolbar: Bool {
@@ -118,16 +119,16 @@ struct ContentView: View {
 
     @ViewBuilder
     private var liveBody: some View {
-        if mirror.isActive {
+        if isWorkoutActive {
             WorkoutDashboardView(
-                activity: mirror.activity ?? .other,
+                activity: mirror.isActive ? mirror.activity ?? .other : mirror.awaitingActivity ?? .other,
                 frame: mirror.latest,
                 stats: mirror.stats,
-                isRunning: mirror.isRunning,
+                isRunning: mirror.isRunning || !mirror.isActive,
                 isFinishing: mirror.state == .stopped,
                 voice: VoiceVisualState(voice: voice),
                 isConfigured: settings.isConfigured,
-                lastError: mirror.lastError,
+                lastError: mirror.lastError ?? (mirror.isActive ? nil : "手表已开始运动，正在接收手表数据，可能要等几十秒。"),
                 onPause: { mirror.pause() },
                 onResume: { mirror.resume() },
                 onEnd: { mirror.end() },

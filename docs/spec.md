@@ -136,6 +136,12 @@ MetricsFrame ─▶ MetricsState（多窗口趋势）
 - **怎么说**交给实时模型：CueQueue 放行一条 cue 时调用 `generate_reply`，内容里带上事实（"心率 178，已连续 25 秒高于 Z4 上限 172"）和语气要求，模型说成一句自然的话。Qwen 下以**用户角色的文字消息**（`generate_reply(user_input=...)`，以"【教练提示】"开头）传入，而不是 `instructions=`：后者被插件做成会话中途的 system 消息，Qwen 实测基本不理会，回答的是最后一条用户消息（14.1）。系统提示词说明【教练提示】不是用户说的话。
 - **常识交给模型，但要在开口那一刻提醒**：不为"骑车被当成跑步"之类的情形写专门规则（覆盖不全）。系统提示词说明教练懂运动常识、数据不合常识时直说并问用户、【教练提示】里的"鼓励"只是默认语气；除安全提醒外，每条【教练提示】还带一句"说之前先用常识想一想，这些数据放在用户正在做的某运动里说不说得通"。2026-11-22 实测（COCH-15，`qwen-audio-3.1-realtime-flash`，纯文本探针）：只写在系统提示词里时，"第 3 公里 4 分 22 秒、心率 127、步频 72"三次都照念或夸；cue 里带上这句后五次中四次指出步频不对并问用户，另一次只播报不夸；正常的 5 分 30 秒公里五次都没有误报。
 - **自由对话**是实时模型的正常行为。用户问数据时，模型必须调用工具（`get_metrics` 等），系统提示词里明确禁止估计数字。
+
+#### 4.2.1 写稿模型（开发者选项，测试阶段，COCH-15）
+
+- 手机设置页"开发者选项"里选"教练主动播报怎么写"：实时模型直接说，或先由文本模型写稿（默认 `qwen3.8-flash`，可选 `qwen3.8-max`、`deepseek-v4.1-flash`）。选择随 `POST /v1/session` 的 `cue_writer` 发给 token API，签进 `SessionMeta`；服务端只接受 `COACHW_WRITER_MODELS`（默认上述三个）里的，其余当作不写稿。重新连接教练后生效。
+- 写稿时机不变，仍由 CueQueue 决定。放行一条非安全类 cue 时，`agent/cue_writer.py` 把运动类型、最近 8 句对话、状态摘要、cue 事实和语气交给文本模型（`providers/writer.py`，DashScope 兼容接口，关思考，4 秒超时），要求用常识判断数据、只用给出的数字、一两句口语；写好的话以"【教练提示】把下面这句话自然地说给用户听…"交给实时模型说出。写稿失败、超时或写进了事实里没有的阿拉伯数字时，退回原来的 cue。安全提醒不经过写稿。用户的提问仍由实时模型直接回答。
+- 2026-11-23 实测（纯文本，COCH-15 的两组数据，各 2–3 次）：`qwen3.8-flash` 约 1 秒、`qwen3.8-max` 约 1.6 秒、`deepseek-v4.1-flash` 约 0.6 秒，都对"4 分 22 秒、步频 72"提出质疑，对正常的 5 分 30 秒没有误报；`qwen-flash` / `qwen-plus` 照样夸，没选；`qwen3.7-plus` 免费额度已用完。
 - 每 30–60 秒向会话写入一条**不触发回复**的文本状态摘要，让对话时模型知道运动进行到哪里。摘要只写阶段、大致用时和距离、目标、是否静音，**不写心率、配速这类随时变化的数字**：模型会沿用记住的旧数字（14.2），这类数字只能来自本轮工具结果或 cue 指令。
 
 ### 4.3 Director：一次运动的时间线
@@ -410,7 +416,7 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 ```
 
 - 复用 voicelab 已跑通的链路（维护者本地仓库 `~/voicelab/voice-playground`，未公开）：`livekit-agents` 1.8.10 + `livekit-plugins-aliyun` 1.8.10，模型 `qwen-audio-3.1-realtime-flash`。
-- 转向检测默认 `server_vad`。voicelab 实测：`smart_turn` 下打断要约 5 秒才生效，`server_vad` 约 0.5 秒。
+- 转向检测默认 `server_vad`。voicelab 实测：`smart_turn` 下打断要约 5 秒才生效，`server_vad` 约 0.5 秒。结束一句话的静音 `silence_duration_ms` 默认 1200 毫秒（`QWEN_VAD_SILENCE_MS`，Qwen 允许 200–6000）：2026-11-22 真实跑步（COCH-15）用 Qwen 默认值时，跑步换气的停顿把一句话切成两三段，教练在第一段后就抢话。待下次户外实测确认 1200 是否合适。
 - iOS 不直连 Qwen，不持有模型 Key；token 由服务端签发，限定房间和 Agent。
 
 ### 7.2 服务端实现（M2）
@@ -459,6 +465,15 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 - **心跳**：手机连上后每 5 秒向教练发一次 LiveKit RPC `coach.ping`（教练回 `pong`，常量在 `server/src/coachw/session.py`），4 秒内没回算一次失败，连续 2 次（约 10 秒）就认定链路已死，断开并重进房间，同时本机播报"教练暂时离线"。实测掉线时 LiveKit 自己 30 多秒才察觉（服务端 15:31:10 已判定断开，手机 15:31:44 才进入重连），这段时间用户说话没人听。教练不认识该方法（旧版）时手机关掉心跳。
 - **对话续接**：房间关了、只能换新教练时（掉线超过 120 秒、Agent 重启），新教练从对话全文记录里取这名运动者最近 30 分钟、最多 30 句的对话（`transcript.recent_conversation`）放进系统提示词，开场白换成"我回来了，接着刚才的话题"，不重新自我介绍。只在开着对话记录时有效。
 - **状态续接**：新会话连上（或 Agent 加入）时发 `coach.resume`（6.3）。服务端接着原来的分段和节点继续，开场白换成"我在线了，继续陪你跑，目前用时…"。本机冒烟见 14.1。
+- **断网时说的话**（COCH-15，维护者要求）：链路一断（`onLinkLost`，没静音时），`OfflineVoiceRecorder` 用 `AVAudioRecorder` 把麦克风录到 Application Support/offline-voice/`<时间>.m4a`（16 kHz 单声道 AAC）；重新连上后停止，用 `SFSpeechRecognizer`（zh-CN，设备支持时只在本机识别）转成文字，记进本机对话记录和运动记录（显示为"我"），再以 LiveKit 文本流 `lk.chat`（livekit-agents 的文字输入）发给教练："（刚才断网的时候我说了：…）"，教练接着回应。转写成功后删掉音频，失败的保留。用户主动挂断时只转写、记在本机。待真机验证：LiveKit 断开后 `AVAudioRecorder` 能否在同一音频会话里录到声音，`LocalSpeaker` 播报时会不会一起录进去。
+- **运动结束后挂断**：运动结束 5 分钟后，没有新运动开始就自动挂断语音教练（留时间给跑后总结和几句闲聊），避免语音一直连着。
+
+### 7.5 位置与周边（COCH-15）
+
+- 教练工具 `look_around(query)`：用户问"我在哪""附近有什么""哪里有厕所 / 便利店"时调用。Agent 经 LiveKit RPC `coach.places`（请求 `{"query": "厕所"}`，常量在 `server/src/coachw/session.py`）问用户的手机，10 秒超时；结果原样给模型：`{available, here, places: [{name, category, distance_m, direction}], reason}`。
+- 手机端 `PlaceFinder`（`apple/iOS/Places/`）用 Apple 地图：位置优先用手表帧里 2 分钟内的 GPS（WGS-84），否则用手机自己的定位（使用期间权限）；`CLGeocoder` 反查所在街道，`MKLocalSearch`（有关键词）或 `MKLocalPointsOfInterestRequest`（没关键词）查 1.5 公里内最近的 5 个地点，给出距离（米）和八方位。坐标不出手机给模型，只给地名、距离、方向；不打日志。
+- 选 Apple 地图的理由：Apple 地图在中国大陆用的是高德的数据，不用另外申请地图 Key、不付费，也不用把坐标交给第三家；查询在手机上做。如果实测发现 POI 覆盖不够，再在服务端接高德 Web 服务 API（需要 Key，坐标要从 WGS-84 转 GCJ-02）。
+- 待真机验证：锁屏跑步时手机能否完成 Apple 地图查询；国内 POI 的覆盖和准确度。
 
 ## 8. 整体架构
 

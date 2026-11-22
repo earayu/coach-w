@@ -9,6 +9,17 @@ from livekit.agents import llm
 from livekit.plugins import aliyun
 
 TURN_DETECTION = ("server_vad", "smart_turn")
+# Silence that ends the athlete's turn. A runner pauses to breathe mid-sentence: with Qwen's
+# default one sentence arrived as two or three fragments and the coach cut in after the first
+# (COCH-15). Qwen accepts 200-6000 ms.
+VAD_SILENCE_MS = 1200
+
+
+def _silence_ms(raw: str) -> int:
+    value = int(raw)
+    if not 200 <= value <= 6000:
+        raise ValueError(f"QWEN_VAD_SILENCE_MS must be 200-6000, got {value}")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +29,7 @@ class QwenSettings:
     voice: str
     turn_detection: str
     base_url: str | None
+    silence_ms: int
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> QwenSettings:
@@ -34,6 +46,7 @@ class QwenSettings:
             voice=env.get("QWEN_VOICE", "longanqian_v3.1"),
             turn_detection=turn,
             base_url=env.get("QWEN_REALTIME_BASE_URL") or None,
+            silence_ms=_silence_ms(env.get("QWEN_VAD_SILENCE_MS", str(VAD_SILENCE_MS))),
         )
 
 
@@ -78,7 +91,11 @@ def create_qwen_realtime(env: Mapping[str, str]) -> llm.RealtimeModel:
     kwargs: dict = {
         "model": s.model,
         "voice": s.voice,
-        "turn_detection": {"type": s.turn_detection},
+        "turn_detection": (
+            {"type": "server_vad", "silence_duration_ms": s.silence_ms}
+            if s.turn_detection == "server_vad"
+            else {"type": s.turn_detection}
+        ),
         "api_key": s.api_key,
     }
     if s.base_url:

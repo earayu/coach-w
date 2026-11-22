@@ -86,14 +86,16 @@ final class WorkoutController: NSObject {
         do {
             let session = try HKWorkoutSession(healthStore: healthStore, configuration: configuration)
             let builder = adopt(session)
+            // Mirroring waits on the iPhone. Awaited before `startActivity` it blocked the start
+            // when the phone was slow or away (COCH-13); started after `beginCollection` the
+            // phone got the session about a minute late (COCH-15). Ask first, wait for nothing:
+            // the workout must not depend on it (AGENTS.md 1).
+            startMirroring(session)
             let startDate = Date()
             session.startActivity(with: startDate)
             try await builder.beginCollection(at: startDate)
             diag("watch", "workout \(wanted) started in \(Self.ms(since: began)) ms")
             if activity?.usesGPS == true { startRoute(builder) }
-            // Mirroring waits on the iPhone; it used to run before `startActivity` and block the
-            // start when the phone was slow or away. The workout must not depend on it (AGENTS.md 1).
-            startMirroring(session)
         } catch {
             diag("watch", "start \(wanted) failed after \(Self.ms(since: began)) ms: \(error.localizedDescription)")
             log.error("failed to start workout: \(error.localizedDescription)")

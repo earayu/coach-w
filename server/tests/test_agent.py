@@ -18,6 +18,7 @@ from coachw.agent.worker import (
     AthleteInbox,
     TurnLog,
     answer_heartbeat,
+    ask_phone_for_places,
     end_when_cap_reached,
     read_session_meta,
 )
@@ -216,3 +217,35 @@ def test_a_new_coach_continues_the_conversation_it_is_given():
 
 def test_the_coach_answers_heartbeats():
     assert answer_heartbeat(SimpleNamespace()) == "pong"
+
+
+class FakeParticipant:
+    def __init__(self, reply=None, error: Exception | None = None) -> None:
+        self.reply, self.error, self.calls = reply, error, []
+
+    async def perform_rpc(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error:
+            raise self.error
+        return self.reply
+
+
+def test_places_come_from_the_athletes_phone():
+    phone = FakeParticipant(json.dumps({"available": True, "places": [{"name": "公厕"}]}))
+    room = SimpleNamespace(local_participant=phone)
+    result = asyncio.run(ask_phone_for_places(room, "athlete-1", "厕所"))
+    assert result["places"] == [{"name": "公厕"}]
+    [call] = phone.calls
+    assert call["destination_identity"] == "athlete-1" and call["method"] == "coach.places"
+    assert json.loads(call["payload"]) == {"query": "厕所"}
+
+
+def test_a_phone_that_cannot_answer_means_no_places():
+    room = SimpleNamespace(local_participant=FakeParticipant(error=TimeoutError()))
+    assert asyncio.run(ask_phone_for_places(room, "a", ""))["available"] is False
+    room = SimpleNamespace(local_participant=FakeParticipant("not json"))
+    assert asyncio.run(ask_phone_for_places(room, "a", ""))["available"] is False
+
+
+def test_the_coach_is_told_to_look_around_instead_of_guessing_places():
+    assert "look_around" in INSTRUCTIONS and "不要编地名" in INSTRUCTIONS

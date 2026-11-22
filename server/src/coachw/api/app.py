@@ -23,6 +23,8 @@ logger = logging.getLogger("coachw.api")
 class SessionRequest(BaseModel):
     invite_code: str
     athlete_id: str
+    # developer setting: text model that writes the coach's cues; "" = realtime model only
+    cue_writer: str = ""
 
 
 class SessionResponse(BaseModel):
@@ -105,7 +107,11 @@ def create_app(
             raise HTTPException(429, "daily voice minutes used up")
 
         # a live room's coach keeps the cap it started with; this one applies if it restarts
-        meta = SessionMeta(athlete_id, int(min(remaining, settings.session_max_s)))
+        writer = req.cue_writer.strip()
+        if writer and writer not in settings.writer_models:
+            logger.info("unknown cue writer ignored athlete_id=%s", athlete_id)
+            writer = ""
+        meta = SessionMeta(athlete_id, int(min(remaining, settings.session_max_s)), writer)
         issued = issue_token(
             api_key=settings.livekit_api_key,
             api_secret=settings.livekit_api_secret,

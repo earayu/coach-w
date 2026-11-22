@@ -73,8 +73,17 @@ final class VoiceSession: NSObject {
     @ObservationIgnored var onLinkLost: (@MainActor () -> Void)?
     /// Called each time a session is connected and its microphone is live.
     @ObservationIgnored var onConnected: (@MainActor () -> Void)?
+    /// Called when the voice session ends for good: the user stopped it or the server said no.
+    @ObservationIgnored var onStopped: (@MainActor () -> Void)?
     /// The workout so far, for a session that joins mid-workout; nil when there is none.
     @ObservationIgnored var resumeProvider: (@MainActor () -> CoachResume?)?
+    /// Answers the coach's `look_around` tool: query in, JSON out (spec 7.5).
+    @ObservationIgnored var placesProvider: (@MainActor (String) async -> String)?
+
+    /// RPC the coach calls to look around the athlete (`server/src/coachw/session.py`).
+    static let placesMethod = "coach.places"
+    /// Text the agent takes as the user's words (livekit-agents' chat input).
+    static let chatTopic = "lk.chat"
 
     @ObservationIgnored private var room: Room?
     @ObservationIgnored private var settings: AppSettings?
@@ -142,6 +151,7 @@ final class VoiceSession: NSObject {
         isCoachSpeaking = false
         isUserSpeaking = false
         status = .idle
+        onStopped?()
         await room?.disconnect()
     }
 
@@ -187,7 +197,8 @@ final class VoiceSession: NSObject {
         status = retryAttempt > 0 ? .reconnecting : .requestingToken
         do {
             let grant = try await TokenClient.requestSession(
-                baseURL: settings.apiBaseURL, inviteCode: settings.trimmedInviteCode, athleteID: settings.athleteID
+                baseURL: settings.apiBaseURL, inviteCode: settings.trimmedInviteCode, athleteID: settings.athleteID,
+                cueWriter: settings.cueWriter
             )
             guard attempt == generation else { return }
             if retryAttempt == 0 { status = .connecting }
@@ -200,6 +211,7 @@ final class VoiceSession: NSObject {
                 return
             }
             await listenForTranscripts(in: room)
+            await answerPlaces(in: room)
             try await room.localParticipant.setMicrophone(enabled: !isMuted)
             guard attempt == generation else {
                 await room.disconnect()
@@ -251,6 +263,7 @@ final class VoiceSession: NSObject {
         isCoachSpeaking = false
         isUserSpeaking = false
         status = .failed(message)
+        onStopped?()
     }
 
     /// The link of a connected session went away.
@@ -357,6 +370,34 @@ final class VoiceSession: NSObject {
         } catch {
             log.error("publish coach.resume failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    /// Tells the coach what the athlete said while it could not hear them (spec 7.4).
+    func sendOfflineSpeech(_ text: String) async {
+        guard status == .connected, let room else { return }
+        do {
+            _ = try await room.localParticipant.sendText("（刚才断网的时候我说了：\(text)）", for: Self.chatTopic)
+            diag("voice", "sent \(text.count) characters said offline to the coach")
+        } catch {
+            log.error("sending offline speech failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func answerPlaces(in room: Room) async {
+        do {
+            try await room.registerRpcMethod(Self.placesMethod) { [weak self] data in
+                let query = (try? JSONSerialization.jsonObject(with: Data(data.payload.utf8)) as? [String: Any])?["query"] as? String
+                guard let self else { return #"{"available":false,"reason":"app closing"}"# }
+                return await self.lookAround(query ?? "")
+            }
+        } catch {
+            log.error("places RPC unavailable: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func lookAround(_ query: String) async -> String {
+        guard let placesProvider else { return #"{"available":false,"reason":"not supported"}"# }
+        return await placesProvider(query)
     }
 
     private func listenForTranscripts(in room: Room) async {

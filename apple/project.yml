@@ -13,7 +13,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "6"
+    CURRENT_PROJECT_VERSION: "8"
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     GENERATE_INFOPLIST_FILE: YES
     INFOPLIST_KEY_NSHealthShareUsageDescription: "coach-w reads your live workout metrics so the coach can follow your training."
@@ -45,6 +45,8 @@ targets:
         UIBackgroundModes:
           - audio
         NSMicrophoneUsageDescription: "coach-w uses the microphone so you can talk to your coach during a workout."
+        NSLocationWhenInUseUsageDescription: "coach-w uses your location so the coach can tell you where you are and what is nearby, like a toilet or a shop. The lookup runs on this iPhone with Apple Maps."
+        NSSpeechRecognitionUsageDescription: "coach-w turns what you said while the coach was offline into text, so the coach still hears it once you are back online."
         NSLocalNetworkUsageDescription: "coach-w connects to a coach server on your local network during development."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 from datetime import UTC, datetime
@@ -23,6 +24,7 @@ from coachw.agent.coach import (
     CoachAgent,
     cap_farewell,
 )
+from coachw.agent.cue_writer import CueWriter, conversation_of
 from coachw.agent.loop import CoachLoop
 from coachw.agent.transcript import Transcript, recent_conversation, transcript_dir
 from coachw.coach.brain import CoachBrain
@@ -37,7 +39,14 @@ from coachw.protocol import (
     ProtocolError,
 )
 from coachw.providers import get_realtime_model
-from coachw.session import AGENT_NAME, HEARTBEAT_METHOD, SessionMeta
+from coachw.providers.writer import TextWriter
+from coachw.session import (
+    AGENT_NAME,
+    HEARTBEAT_METHOD,
+    PLACES_METHOD,
+    SessionMeta,
+    writer_models,
+)
 
 logger = logging.getLogger("coachw.agent")
 
@@ -181,6 +190,38 @@ def answer_heartbeat(_data: rtc.RpcInvocationData) -> str:
     return "pong"
 
 
+def cue_writer_for(meta: SessionMeta, brain: CoachBrain, agent: CoachAgent) -> CueWriter | None:
+    """The text model the phone picked for this session's cues, if the server offers it."""
+    if not meta.cue_writer:
+        return None
+    if meta.cue_writer not in writer_models(os.environ):
+        logger.warning("cue writer not offered by this server; the realtime model speaks alone")
+        return None
+    logger.info("cues written by %s", meta.cue_writer)
+    text = TextWriter(meta.cue_writer, os.environ)
+    return CueWriter(brain, text.write, lambda: conversation_of(agent.chat_ctx.items))
+
+
+# The phone looks the place up with Apple Maps; that takes a few seconds on mobile data.
+PLACES_TIMEOUT_S = 10.0
+
+
+async def ask_phone_for_places(room: rtc.Room, identity: str, query: str) -> dict[str, Any]:
+    """What is around the athlete, from their phone (spec 7.5). Never raises."""
+    try:
+        raw = await room.local_participant.perform_rpc(
+            destination_identity=identity,
+            method=PLACES_METHOD,
+            payload=json.dumps({"query": query}, ensure_ascii=False),
+            response_timeout=PLACES_TIMEOUT_S,
+        )
+        result = json.loads(raw)
+        return result if isinstance(result, dict) else {"available": False, "reason": "bad reply"}
+    except Exception as e:  # an older app, no network, a slow lookup
+        logger.info("look_around failed: %s", type(e).__name__)
+        return {"available": False, "reason": "phone did not answer"}
+
+
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
@@ -210,7 +251,12 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     if history:
         logger.info("continuing the conversation from %d earlier lines", len(history))
-    agent = CoachAgent(brain, keeps_transcript=directory is not None, history=history)
+    agent = CoachAgent(
+        brain,
+        keeps_transcript=directory is not None,
+        history=history,
+        places=lambda query: ask_phone_for_places(ctx.room, participant.identity, query),
+    )
     turns = TurnLog()
     turns.attach(session)
     if directory is not None:
@@ -246,7 +292,8 @@ async def entrypoint(ctx: JobContext) -> None:
     if history and greeting == GREETING:
         greeting = RECONNECT_GREETING
     session.generate_reply(instructions=greeting)
-    coach = asyncio.create_task(CoachLoop(brain, agent, session, publish_cue).run())
+    writer = cue_writer_for(meta, brain, agent)
+    coach = asyncio.create_task(CoachLoop(brain, agent, session, publish_cue, writer=writer).run())
     ctx.add_shutdown_callback(lambda: _cancel(coach))
 
 

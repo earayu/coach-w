@@ -219,3 +219,14 @@ def test_webhook_requires_signature(client: TestClient):
 def test_settings_require_invites():
     with pytest.raises(ValueError, match="COACHW_INVITES"):
         ApiSettings.from_env(ENV | {"COACHW_INVITES": ""})
+
+
+def test_the_phone_picks_a_cue_writer_the_server_offers(client: TestClient):
+    def writer(name: str) -> str:
+        body = {"invite_code": ALICE, "athlete_id": ATHLETE, "cue_writer": name}
+        token = client.post("/v1/session", json=body).json()["token"]
+        return SessionMeta.from_json(verify(token).metadata).cue_writer
+
+    assert writer("qwen3.8-flash") == "qwen3.8-flash"
+    assert writer("gpt-9") == ""  # not offered: the realtime model speaks alone
+    assert SessionMeta.from_json(verify(start(client).json()["token"]).metadata).cue_writer == ""

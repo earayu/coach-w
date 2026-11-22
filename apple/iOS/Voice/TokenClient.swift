@@ -26,14 +26,16 @@ enum TokenError: LocalizedError {
 }
 
 enum TokenClient {
-    static func requestSession(baseURL: String, inviteCode: String, athleteID: String) async throws -> SessionGrant {
+    static func requestSession(
+        baseURL: String, inviteCode: String, athleteID: String, cueWriter: String = ""
+    ) async throws -> SessionGrant {
         // http / https only: anything else would send the invite code somewhere unexpected
         guard let base = ServerAddress.parse(baseURL) else { throw TokenError.invalidBaseURL }
         var request = URLRequest(url: base.appending(path: "v1/session"), timeoutInterval: 15)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode([
-            "invite_code": inviteCode.trimmedForSettings, "athlete_id": athleteID,
+            "invite_code": inviteCode.trimmedForSettings, "athlete_id": athleteID, "cue_writer": cueWriter,
         ])
 
         let (data, response) = try await URLSession.shared.data(for: request)

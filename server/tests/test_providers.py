@@ -55,4 +55,11 @@ def test_qwen_builds_model():
 
     model = get_realtime_model("qwen", {"DASHSCOPE_API_KEY": "k"})
     assert isinstance(model, aliyun.realtime.RealtimeModel)
-    assert model._opts.turn_detection == {"type": "server_vad"}
+    assert model._opts.turn_detection == {"type": "server_vad", "silence_duration_ms": 1200}
+
+
+def test_qwen_turn_silence_is_configurable_within_qwens_range():
+    s = QwenSettings.from_env({"DASHSCOPE_API_KEY": "k", "QWEN_VAD_SILENCE_MS": "900"})
+    assert s.silence_ms == 900
+    with pytest.raises(ValueError, match="QWEN_VAD_SILENCE_MS"):
+        QwenSettings.from_env({"DASHSCOPE_API_KEY": "k", "QWEN_VAD_SILENCE_MS": "100"})

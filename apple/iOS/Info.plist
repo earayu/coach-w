@@ -25,8 +25,12 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>coach-w connects to a coach server on your local network during development.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>coach-w uses your location so the coach can tell you where you are and what is nearby, like a toilet or a shop. The lookup runs on this iPhone with Apple Maps.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>coach-w uses the microphone so you can talk to your coach during a workout.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>coach-w turns what you said while the coach was offline into text, so the coach still hears it once you are back online.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
