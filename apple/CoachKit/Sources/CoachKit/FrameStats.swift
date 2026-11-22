@@ -23,8 +23,12 @@ public struct FrameStats: Sendable, Equatable {
         received += 1
         if let phoneTs = frame.phoneTs { lastDelayMs = phoneTs - frame.ts }
         if let lastSeq, frame.seq <= lastSeq {
-            outOfOrder += 1
-            return
+            guard let lastTs, frame.ts > lastTs else {
+                outOfOrder += 1
+                return
+            }
+            // a relaunched watch app numbers from 1 again: later frames are not all out of order
+            self.lastSeq = nil
         }
         if let lastSeq { missing += frame.seq - lastSeq - 1 }
         if let lastTs {

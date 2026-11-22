@@ -44,8 +44,10 @@ def create_app(settings: ApiSettings, clock: Callable[[], float] = time.time) ->
     def healthz() -> dict:
         return {"ok": True}
 
+    # async on purpose: FastAPI runs plain `def` handlers in a thread pool, where parallel requests
+    # and the webhook would read and replace the ledger at the same time. Nothing here blocks.
     @app.post("/v1/session")
-    def create_session(req: SessionRequest) -> SessionResponse:
+    async def create_session(req: SessionRequest) -> SessionResponse:
         try:
             athlete_id = parse_athlete_id(req.athlete_id)
         except ValueError:
@@ -56,6 +58,7 @@ def create_app(settings: ApiSettings, clock: Callable[[], float] = time.time) ->
             raise HTTPException(401, "unknown invite code")
 
         now = clock()
+        ledger.supersede(invite.code, athlete_id)
         remaining = invite.daily_minutes * 60 - ledger.used_s(invite.code, now)
         if remaining < settings.min_session_s:
             logger.info("rejected: daily minutes used up athlete_id=%s", athlete_id)

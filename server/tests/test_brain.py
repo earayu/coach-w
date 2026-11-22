@@ -237,3 +237,52 @@ def test_end_milestone_on_workout_end():
     s.run.run(3, state=WorkoutState.ENDED)
     assert s.kinds()[-1] == "end"
     assert s.deliveries[-1].watch.haptic is Haptic.STOP
+
+
+def companions(s):
+    return [d for d in s.deliveries if d.cue.priority is CuePriority.COMPANION]
+
+
+def test_companion_chat_waits_its_interval_after_a_conversation():
+    s = Session()
+    slow = 1.5  # splits far apart, so only companion chat fills the gaps
+    s.run.run(200, speed=slow)
+    s.user_speaking = True  # the athlete and the coach chat for a while
+    s.run.run(30, speed=slow)
+    s.user_speaking = False
+    talked_at = s.clock.now
+    s.run.run(400, speed=slow)
+    first = companions(s)[0]
+    assert first.cue.created_at - talked_at >= s.brain.profile.cadence.companion_s
+
+
+def test_rejected_target_pace_changes_nothing():
+    s = Session()
+    s.run.run(1)
+    tool = s.brain.run_profile_tool
+    tool("adjust_target_pace", {"pace_min": 5, "pace_sec": 30, "goal_km": 10})
+    before = dict(s.brain.targets)
+    assert tool("adjust_target_pace", {"pace_min": 6, "pace_sec": 0, "goal_km": 500})["ok"] is False
+    assert tool("adjust_target_pace", {"pace_min": 0, "pace_sec": 0, "goal_km": -1})["ok"] is False
+    assert tool("adjust_target_pace", {"pace_min": 1, "pace_sec": -60})["ok"] is False
+    assert s.brain.targets == before
+
+
+def test_the_next_workout_in_the_same_voice_session_starts_fresh():
+    s = Session()
+    s.run.run(400)
+    s.run.run(2, state=WorkoutState.ENDED)
+    s.run.new_workout()
+    s.run.run(30)
+    assert s.kinds().count("start") == 2
+    assert s.brain.state.elapsed_s == 30 and s.brain.state.started
+    assert s.brain.state.distance_m == pytest.approx(90)
+
+
+def test_a_new_workout_is_noticed_even_when_the_end_frame_was_lost():
+    s = Session()
+    s.run.run(400)
+    s.run.new_workout()
+    s.run.run(30)
+    assert s.kinds().count("start") == 2
+    assert s.brain.state.elapsed_s == 30

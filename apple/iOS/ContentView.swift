@@ -124,6 +124,7 @@ struct ContentView: View {
                 frame: mirror.latest,
                 stats: mirror.stats,
                 isRunning: mirror.isRunning,
+                isFinishing: mirror.state == .stopped,
                 voice: VoiceVisualState(voice: voice),
                 isConfigured: settings.isConfigured,
                 lastError: mirror.lastError,

@@ -30,6 +30,9 @@ from coachw.protocol import (
 
 QUIET_MAX_MIN = 30
 
+# Workout time going back by more than this (on a newer frame) means a new workout started.
+NEW_WORKOUT_REWIND_S = 5.0
+
 # Cues the watch also buzzes for. Companion chat stays in the ear only.
 WATCH_PRIORITIES = (CuePriority.EMERGENCY, CuePriority.CORRECTION, CuePriority.MILESTONE)
 
@@ -79,6 +82,7 @@ class CoachBrain:
         self.engine: EventEngine | None = None
         self.queue = CueQueue(max_per_minute=3, min_gap_s=10)
         self.started_at = clock()
+        self.last_talk_at: float | None = None
         self.alerts: dict[str, int] = {}
         self.profile_version = 0
         self.resumed: CoachResume | None = None
@@ -86,14 +90,27 @@ class CoachBrain:
     # -- input ---------------------------------------------------------------------------------
 
     def on_frame(self, frame: MetricsFrame) -> bool:
-        if self.profile is None or frame.activity not in self.profile.activity_types:
-            if self.state.latest and (frame.ts, frame.seq) <= (
-                self.state.latest.ts,
-                self.state.latest.seq,
-            ):
-                return False
+        latest = self.state.latest
+        if latest and (frame.ts, frame.seq) <= (latest.ts, latest.seq):
+            return False
+        if (
+            self.profile is None
+            or frame.activity not in self.profile.activity_types
+            or self._starts_new_workout(latest, frame)
+        ):
             self._load(self._profiles(frame.activity))
         return self.state.update(frame)
+
+    @staticmethod
+    def _starts_new_workout(latest: MetricsFrame | None, frame: MetricsFrame) -> bool:
+        """The voice session outlives a workout: the next one must not inherit its state (its
+        samples were ignored until their time passed the old workout's, and start never fired)."""
+        if latest is None:
+            return False
+        if latest.state is WorkoutState.ENDED:
+            return frame.state is not WorkoutState.ENDED
+        # the end frame was lost: workout time only runs backwards when a new workout began
+        return frame.elapsed_s + NEW_WORKOUT_REWIND_S < latest.elapsed_s
 
     def _load(self, profile: ActivityProfile) -> None:
         """A new activity starts a fresh coaching state; quiet mode carries over."""
@@ -155,8 +172,13 @@ class CoachBrain:
         if self.profile is None or self.director is None or self.engine is None:
             return None
         now = self._clock()
+        if user_speaking or agent_speaking:
+            # a conversation counts as talk: companion chat waits its interval after it too
+            self.last_talk_at = now
         ctx = RuleContext(self.state, self.targets)
-        since_spoken = now - (self.queue.last_spoken_at or self.started_at)
+        since_spoken = now - max(
+            self.queue.last_spoken_at or self.started_at, self.last_talk_at or self.started_at
+        )
         since_alert = now - (self.queue.last_alert_at or self.started_at)
         events = self.engine.evaluate(ctx) + self.director.evaluate(
             self.state, self.targets, since_spoken_s=since_spoken, since_alert_s=since_alert
@@ -164,7 +186,11 @@ class CoachBrain:
         for event in events:
             self.queue.offer(event, now)
         release = self.queue.next(now, user_speaking=user_speaking, agent_speaking=agent_speaking)
-        return self._deliver(release) if release else None
+        if release is None:
+            return None
+        if release.cue.priority is CuePriority.COMPANION:
+            self.director.companion_spoken()
+        return self._deliver(release)
 
     def _deliver(self, release: Release) -> Delivery:
         cue = release.cue
@@ -210,7 +236,7 @@ class CoachBrain:
             parts.append(f"已完成第 {self.state.splits[-1].index} {self.profile.split_label}")
         if goals := self.profile.describe_targets(self.targets):
             parts.append(f"目标：{'，'.join(goals)}")
-        if self.state.is_stale():
+        if self.state.is_stale() and self.state.is_running:
             parts.append("手表数据暂时中断")
         now = self._clock()
         if self.queue.is_quiet(now):

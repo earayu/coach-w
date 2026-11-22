@@ -131,6 +131,13 @@ final class WorkoutController: NSObject {
             log.info("recovered active workout session")
             let builder = adopt(session)
             state = session.state
+            if session.state == .stopped {
+                // the app quit while saving: no state change will come to finish it, and the
+                // workout would never reach HealthKit (AGENTS.md 1)
+                diag("watch", "recovered a stopped workout; saving it now")
+                await finish(at: session.endDate ?? .now)
+                return
+            }
             updateHeartbeat()
             if activity?.usesGPS == true { startRoute(builder) }
             do {
@@ -309,30 +316,35 @@ final class WorkoutController: NSObject {
         ingest([], elapsed: builder?.elapsedTime(at: date) ?? 0, force: true)
         switch newState {
         case .stopped:
-            stoppedAt = .now
-            locationFeed.stop()
-            guard let builder, let session else {
-                diag("watch", "stopped without a builder or session")
-                return
-            }
-            let began = Date()
-            do {
-                try await builder.endCollection(at: date)
-                _ = try await builder.finishWorkout()
-                diag("watch", "workout saved in \(Self.ms(since: began)) ms")
-            } catch {
-                diag("watch", "saving workout failed after \(Self.ms(since: began)) ms: \(error.localizedDescription)")
-                log.error("failed to finish workout: \(error.localizedDescription)")
-                lastError = "保存运动失败：\(error.localizedDescription)"
-            }
-            // Always end: a session left in `stopped` kept the dial up with a dead "end" button and
-            // made every later start a silent no-op (COCH-13).
-            session.end()
+            await finish(at: date)
         case .ended:
             reset()
         default:
             break
         }
+    }
+
+    /// Saves the stopped workout to HealthKit, then ends the session.
+    private func finish(at date: Date) async {
+        stoppedAt = .now
+        locationFeed.stop()
+        guard let builder, let session else {
+            diag("watch", "stopped without a builder or session")
+            return
+        }
+        let began = Date()
+        do {
+            try await builder.endCollection(at: date)
+            _ = try await builder.finishWorkout()
+            diag("watch", "workout saved in \(Self.ms(since: began)) ms")
+        } catch {
+            diag("watch", "saving workout failed after \(Self.ms(since: began)) ms: \(error.localizedDescription)")
+            log.error("failed to finish workout: \(error.localizedDescription)")
+            lastError = "保存运动失败：\(error.localizedDescription)"
+        }
+        // Always end: a session left in `stopped` kept the dial up with a dead "end" button and
+        // made every later start a silent no-op (COCH-13).
+        session.end()
     }
 }
 

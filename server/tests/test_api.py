@@ -115,21 +115,46 @@ def test_athlete_id_must_be_uuid(client: TestClient):
     assert start(client, athlete="me").status_code == 422
 
 
+def other_athlete() -> str:
+    return str(uuid.uuid4())
+
+
 def test_daily_minutes_enforced(client: TestClient):
-    # Alice: 30 min/day, sessions capped at 20 min
+    # Alice: 30 min/day, sessions capped at 20 min; one invite shared by two phones
     first = start(client).json()
     assert first["max_session_s"] == 20 * 60
-    second = start(client).json()
+    second = start(client, athlete=other_athlete()).json()
     assert second["max_session_s"] == 10 * 60  # what is left of the day
-    assert start(client).status_code == 429
+    assert start(client, athlete=other_athlete()).status_code == 429
 
 
 def test_unused_tokens_release_minutes(client: TestClient, clock: Clock):
     start(client)
-    start(client)
-    assert start(client).status_code == 429
+    start(client, athlete=other_athlete())
+    assert start(client, athlete=other_athlete()).status_code == 429
     clock.now += 601
-    assert start(client).status_code == 200
+    assert start(client, athlete=other_athlete()).status_code == 200
+
+
+def test_reconnect_is_not_blocked_by_the_dropped_session(client: TestClient, clock: Clock):
+    first = start(client).json()
+    webhook(client, "participant_joined", first["room"], ATHLETE)
+    clock.now += 2 * 60
+    # the link dropped; LiveKit has not noticed yet, so the first session is still "in the room"
+    second = start(client).json()
+    assert second["max_session_s"] == 20 * 60  # 2 of 30 minutes spent, not the 20 reserved
+    clock.now += 30
+    webhook(client, "participant_left", first["room"], ATHLETE)
+    webhook(client, "participant_joined", second["room"], ATHLETE)
+    # another phone on the invite sees both: 2.5 minutes spent and a 20-minute reservation
+    third = start(client, athlete=other_athlete()).json()
+    assert third["max_session_s"] == 7 * 60 + 30
+
+
+def test_retries_without_joining_do_not_use_up_the_day(client: TestClient):
+    # Bob: 1 min/day; a phone whose joins keep failing asks again and again
+    for _ in range(3):
+        assert start(client, code=BOB).json()["max_session_s"] == 60
 
 
 def test_webhooks_settle_real_usage(client: TestClient, clock: Clock):
@@ -145,7 +170,7 @@ def test_webhooks_settle_real_usage(client: TestClient, clock: Clock):
 def test_short_remainder_is_rejected(client: TestClient):
     # Bob: 1 min/day; one reservation uses it all
     assert start(client, code=BOB).json()["max_session_s"] == 60
-    assert start(client, code=BOB).status_code == 429
+    assert start(client, code=BOB, athlete=other_athlete()).status_code == 429
 
 
 def test_webhook_requires_signature(client: TestClient):

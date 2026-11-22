@@ -129,3 +129,26 @@ def test_no_start_announcement_when_joining_mid_workout():
     assert "start" not in h.kinds
     assert not any(k.startswith("phase:") for k in h.kinds)
     assert [k for k in h.kinds if k.startswith("split:")] == ["split:4"]
+
+
+def test_companion_topic_moves_on_only_once_spoken():
+    h = Harness(profile=RUNNING)
+    h.run.run(20)
+    h.since_spoken = RUNNING.cadence.companion_s
+    h.tick()
+    h.tick()  # offered again while the queue still holds it back
+    first, again = (e.facts for e in h.events[-2:])
+    assert first == again and RUNNING.companion_topics[0] in first
+    h.director.companion_spoken()
+    h.tick()
+    assert RUNNING.companion_topics[1] in h.events[-1].facts
+
+
+def test_a_paused_watch_going_quiet_is_not_data_loss():
+    # the watch sends no heartbeat while paused: silence then is the pause, not a broken link
+    h = Harness()
+    h.run.run(60)
+    h.run.run(1, state=WorkoutState.PAUSED)
+    h.clock.advance(120)
+    h.tick()
+    assert "data_lost" not in h.kinds

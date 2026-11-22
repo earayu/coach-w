@@ -21,7 +21,8 @@ from typing import Any
 logger = logging.getLogger("coachw.agent")
 
 CUE_PREFIX = "【教练提示】"
-STATUS_PREFIX = "【运动状态】"
+# the status summary opens with "【运动状态，仅供参考，不要回复】"
+STATUS_PREFIX = "【运动状态"
 
 
 def transcript_dir(env: dict[str, str] | os._Environ[str] = os.environ) -> Path | None:

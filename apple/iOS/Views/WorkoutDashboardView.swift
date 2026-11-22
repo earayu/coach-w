@@ -8,6 +8,8 @@ struct WorkoutDashboardView: View {
     let frame: MetricsFrame?
     let stats: FrameStats
     let isRunning: Bool
+    /// The watch stopped the workout and is saving it: pause / resume no longer apply.
+    var isFinishing = false
     let voice: VoiceVisualState
     let isConfigured: Bool
     let lastError: String?
@@ -492,8 +494,8 @@ struct WorkoutDashboardView: View {
                 (isRunning ? onPause : onResume)()
             } label: {
                 Label(
-                    isRunning ? "暂停运动" : "继续运动",
-                    systemImage: isRunning ? "pause.fill" : "play.fill"
+                    isFinishing ? "正在保存…" : isRunning ? "暂停运动" : "继续运动",
+                    systemImage: isFinishing ? "hourglass" : isRunning ? "pause.fill" : "play.fill"
                 )
                 .font(.headline.weight(.bold))
                 .foregroundStyle(isRunning ? PulseTheme.amber : PulseTheme.obsidianMid)
@@ -518,6 +520,7 @@ struct WorkoutDashboardView: View {
                 }
             }
             .buttonStyle(.plain)
+            .disabled(isFinishing)
 
             Button {
                 diag("phone-ui", "end tapped")

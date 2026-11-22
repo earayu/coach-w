@@ -84,7 +84,8 @@ class Director:
         if frame.state is WorkoutState.ENDED:
             return self._once("end", self._end_facts(state), Haptic.STOP, "运动结束")
         if state.is_stale():
-            if state.started and (state.age_s() or 0) >= DATA_LOST_AFTER_S:
+            # a paused watch sends no heartbeat: only a running workout going quiet is a lost link
+            if state.started and state.is_running and (state.age_s() or 0) >= DATA_LOST_AFTER_S:
                 return self._once(
                     "data_lost",
                     "已经有一会儿收不到手表的数据了。提醒用户看一下手表上的运动是否还在进行，"
@@ -231,6 +232,11 @@ class Director:
 
     # -- companion -----------------------------------------------------------------------------
 
+    def companion_spoken(self) -> None:
+        """The companion cue was released: the next one takes the next topic. Offers the queue
+        held back or dropped (user speaking, expired) do not use a topic up."""
+        self._topic += 1
+
     def companion_interval_s(self, since_alert_s: float) -> float:
         c = self.profile.cadence
         stable = since_alert_s >= c.stable_after_s
@@ -243,7 +249,6 @@ class Director:
         if not topics or since_spoken_s < self.companion_interval_s(since_alert_s):
             return []
         topic = topics[self._topic % len(topics)]
-        self._topic += 1
         return [
             CoachEvent(
                 kind="companion",

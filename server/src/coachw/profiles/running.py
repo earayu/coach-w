@@ -91,19 +91,19 @@ def adjust_target_pace(brain: CoachBrain, args: Mapping[str, Any]) -> dict[str, 
     except (TypeError, ValueError):
         return {"ok": False, "reason": "pace_min / pace_sec must be integers, goal_km a number"}
     total = minutes * 60 + seconds
+    # validate everything before changing anything: a rejected call must not half-apply
+    if not (0 <= seconds < 60) or (total and not PACE_MIN_S <= total <= PACE_MAX_S):
+        return {"ok": False, "reason": "pace must be between 2'30\" and 15'00\" per km"}
+    if goal_km is not None and not (goal_km == 0 or 0 < goal_km <= GOAL_MAX_KM):
+        return {"ok": False, "reason": f"goal_km must be between 0 and {GOAL_MAX_KM}"}
     if total == 0:
         brain.targets.pop(TARGET_SPEED, None)
-    elif not (PACE_MIN_S <= total <= PACE_MAX_S) or not (0 <= seconds < 60):
-        return {"ok": False, "reason": "pace must be between 2'30\" and 15'00\" per km"}
     else:
         brain.targets[TARGET_SPEED] = 1000 / total
-    if goal_km is not None:
-        if goal_km == 0:
-            brain.targets.pop(GOAL_KEY, None)
-        elif 0 < goal_km <= GOAL_MAX_KM:
-            brain.targets[GOAL_KEY] = goal_km * 1000
-        else:
-            return {"ok": False, "reason": f"goal_km must be between 0 and {GOAL_MAX_KM}"}
+    if goal_km == 0:
+        brain.targets.pop(GOAL_KEY, None)
+    elif goal_km is not None:
+        brain.targets[GOAL_KEY] = goal_km * 1000
     out: dict[str, Any] = {"ok": True}
     out["target_pace_per_km"] = format_pace_seconds(total) if total else None
     out["goal_distance_m"] = brain.targets.get(GOAL_KEY)
