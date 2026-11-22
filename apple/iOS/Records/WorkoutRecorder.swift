@@ -38,7 +38,11 @@ final class WorkoutRecorder {
 
     /// A mirrored workout session started on the watch.
     func begin(_ activity: WorkoutActivity) {
-        if !finished { diag("recorder", "new workout while one was still open; the open one is dropped") }
+        if !finished {
+            // e.g. the link dropped before the old workout's end reached the phone: keep what it has
+            diag("recorder", "new workout while one was still open; saving the open one first")
+            finish()
+        }
         diag("recorder", "begin \(activity.wireName)")
         tracker = WorkoutTracker()
         coach = LocalCoach(config: activity.offlineCoach)
