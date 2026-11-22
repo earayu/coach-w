@@ -216,7 +216,11 @@ extension MirrorReceiver: HKWorkoutSessionDelegate {
     nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
         let message = error.localizedDescription
         diag("phone", "mirrored session failed: \(Self.describe(error))")
-        Task { @MainActor in self.lastError = message }
+        Task { @MainActor in
+            // a session this receiver already replaced must not put its error on the new workout
+            guard self.session === workoutSession else { return }
+            self.lastError = message
+        }
     }
 
     nonisolated func workoutSession(
