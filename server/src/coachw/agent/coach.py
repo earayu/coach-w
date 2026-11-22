@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from livekit.agents import Agent, RunContext, function_tool, llm
@@ -27,6 +27,11 @@ INSTRUCTIONS = """\
 - 记住这次对话里用户说过的话。用户让你复述、回忆或者问"我刚才说了什么"，就照这次对话的内容把他的原意复述出来。
 - 不要把同一句话说两遍；上一句没有回答到点子上，就换个说法直接回答。
 - 做不到的事直说做不到，并说清楚现在能做什么。你拿不到用户的位置、地图和周边信息，不要说自己看得到 GPS 或轨迹。
+
+用常识看数据：
+- 你懂运动生理和训练常识，知道跑步、骑行、步行等运动正常的配速或速度、步频、心率大概什么样，以及它们之间怎么关联。
+- 每次拿到数据，先想一想合不合常识、和用户正在做的运动对不对得上。手表上选的运动可能和用户实际在做的不一样，传感器也会出错。
+- 数据不合常识时直说哪里不对，问用户怎么回事，不要照着念，更不要夸。【教练提示】里的"鼓励""夸奖"只是默认语气，和常识冲突时以常识为准。
 
 数字规则（最重要）：
 - 你说出的每一个运动数字（心率、配速、距离、时间、步频、功率、卡路里等）都必须来自本轮刚调用的工具结果（get_metrics、get_progress、end_workout_summary），或本轮【教练提示】里给出的数字。
@@ -57,8 +62,26 @@ FEEDBACK_NOT_KEPT = """
 """
 
 
-def instructions(keeps_transcript: bool) -> str:
-    return INSTRUCTIONS + (FEEDBACK_KEPT if keeps_transcript else FEEDBACK_NOT_KEPT)
+def instructions(keeps_transcript: bool, history: Sequence[tuple[str, str]] = ()) -> str:
+    text = INSTRUCTIONS + (FEEDBACK_KEPT if keeps_transcript else FEEDBACK_NOT_KEPT)
+    if history:
+        said = "\n".join(
+            f"{'用户' if kind == 'user' else '教练'}：{line}" for kind, line in history
+        )
+        text += HISTORY.format(said=said)
+    return text
+
+
+# A new coach after the voice link dropped for good gets the conversation so far (COCH-15).
+HISTORY = """
+刚才的对话（语音断开前，按时间顺序）：
+{said}
+语音断开后又连上了，你就是刚才那个教练：接着刚才的对话，记住用户说过的话，不要重新自我介绍。
+"""
+
+RECONNECT_GREETING = (
+    "语音刚刚重新连上。用一句简短的话告诉用户你回来了，可以接着刚才的话题，不要重新自我介绍。"
+)
 
 
 GREETING = "用一句简短的中文向用户打招呼，说你是他的教练，可以随时问你心率配速，也可以随时打断你。"
@@ -101,8 +124,13 @@ def profile_tool(brain: CoachBrain, spec: ProfileTool) -> llm.RawFunctionTool:
 
 
 class CoachAgent(Agent):
-    def __init__(self, brain: CoachBrain, keeps_transcript: bool = False) -> None:
-        self._instructions = instructions(keeps_transcript)
+    def __init__(
+        self,
+        brain: CoachBrain,
+        keeps_transcript: bool = False,
+        history: Sequence[tuple[str, str]] = (),
+    ) -> None:
+        self._instructions = instructions(keeps_transcript, history)
         super().__init__(instructions=self._instructions)
         self.brain = brain
         self._base_tools = list(self.tools)

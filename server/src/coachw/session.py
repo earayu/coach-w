@@ -12,6 +12,8 @@ import uuid
 from dataclasses import asdict, dataclass
 
 AGENT_NAME = "coach-w"
+# RPC the phone calls every few seconds to tell a dead link from a quiet one (COCH-15).
+HEARTBEAT_METHOD = "coach.ping"
 
 
 def parse_athlete_id(raw: str) -> str:

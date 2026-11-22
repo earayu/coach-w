@@ -25,12 +25,12 @@ coach-w 是一个实时语音运动教练：Apple Watch 采集运动指标，iPh
 - `apple/Shared/WorkoutActivity.swift`：UI 可选运动与 HealthKit / 线协议的映射表（含展示文案、是否开 GPS、速度读法、手机本地兜底的分段长度）、HealthKit 权限类型
 - `apple/iOS/Views/`：`LobbyView`（开跑大厅、运动类型卡片选择器、语音教练预览卡与"刚刚完成"入口）、`WorkoutDashboardView`（运动仪表盘：顶部声波状态条、核心英雄卡、心率区间卡、自适应次级指标网格、折叠式数据流诊断抽屉、底部防误触控制栏）
 - `apple/iOS/Components/PulseVoiceComponents.swift`：从 `VoiceSession` 派生的视图状态（`VoiceVisualState`）与动态声波动画组件（`VoiceWaveView`、`CoachStatusPill`），UI 层不接触 LiveKit 类型
-- `apple/iOS/Voice/VoiceSession.swift`：唯一引用 LiveKit 的文件；连房间（带代数防 start/stop 竞态）、开麦、按序把指标帧发到 `coach.metrics`、收 `coach.cue`、跟踪教练说话态（`isCoachSpeaking`）；断线自动重连（`ReconnectPolicy` 退避 + `NWPathMonitor`）、发 `coach.resume`、收 `lk.transcription` 教练文字。`TokenClient.swift`：调 token API。`LocalSpeaker.swift`：断网时 `AVSpeechSynthesizer` 本机播报
+- `apple/iOS/Voice/VoiceSession.swift`：唯一引用 LiveKit 的文件；连房间（带代数防 start/stop 竞态）、开麦、按序把指标帧发到 `coach.metrics`、收 `coach.cue`、跟踪教练说话态（`isCoachSpeaking`）；断线自动重连（`ReconnectPolicy` 退避 + `NWPathMonitor`；RPC 心跳 `coach.ping` 约 10 秒发现死链路）、发 `coach.resume`、收 `lk.transcription` 教练文字。`TokenClient.swift`：调 token API。`LocalSpeaker.swift`：断网时 `AVSpeechSynthesizer` 本机播报
 - `apple/iOS/Records/`：`WorkoutRecorder`（跟踪当前运动、本地兜底 cue、续接摘要、结束时存记录）、`WorkoutStore`（本机 JSON 记录）、`RecordsView`（记录列表、分段柱状图与教练对话时间线详情）；接线在 `CoachWApp.swift`
 - `apple/iOS/Settings/`：`AppSettings.swift`（`athlete_id`、邀请码钥匙串、token API 地址）与 `SettingsView.swift`（暗色分组设置页、服务器校验状态、邀请码显隐切换与运动者 ID 复制）
 - `apple/CoachKit`：`MetricsFrame`、`CoachCue`、`CoachResume`（线协议）、`FrameBuilder`（合并读数、节流、推算步频、GPS）、`FrameStats`（收端统计）、`ServerAddress`（设置里的服务器地址校验）、`WorkoutTracker`（手机端跟踪运动：公里时刻、均值）、`LocalCoach`（断网兜底规则）、`ReconnectPolicy`、`WorkoutRecord`
 - `server/src/coachw/session.py`：token API 与 Agent 的约定（Agent 名 `coach-w`、签进 token 的 `SessionMeta`）
-- `server/src/coachw/agent/transcript.py`：每个会话的对话全文（JSONL，`COACHW_TRANSCRIPT_DIR`，生产在 docker 卷 `transcripts`）；看用户语音里提的反馈先查这里
+- `server/src/coachw/agent/transcript.py`：每个会话的对话全文（JSONL，`COACHW_TRANSCRIPT_DIR`，生产在 docker 卷 `transcripts`）；看用户语音里提的反馈先查这里。新教练从这里取运动者最近的对话接着聊（`recent_conversation`）
 - `server/src/coachw/agent/worker.py`：Agent 入口、`AthleteInbox`（订阅 `coach.metrics` / `coach.resume`，身份确认前暂存）、续接开场白、下发 `coach.cue`、会话时长上限；`coach.py`：系统提示词、工具、档案工具包装、状态摘要；`loop.py`：每秒教练循环（cue → `generate_reply(user_input=...)`、紧急打断、状态摘要）
 - `server/src/coachw/coach/`：通用教练内核，不出现运动类型（spec 4.8）。`metrics_state.py`（窗口、连续时长、分段、基线）、`events.py`（`CoachEvent`、通用规则、`EventEngine`）、`director.py`（阶段、节点、陪伴）、`cue_queue.py`（优先级 / 冷却 / 过期 / 不插话 / 静音 / 密度）、`brain.py`（每会话编排与工具结果）、`format.py`
 - `server/src/coachw/profiles/`：运动档案（spec 5.3、5.4）。`base.py`（`ActivityProfile`）、`registry.py`（`activity` → 档案）、`running.py`（P0 跑步）、`walking.py`（散步、徒步）、`cycling.py`（骑行）、`fallback.py`（通用兜底）

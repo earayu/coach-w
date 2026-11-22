@@ -1,8 +1,8 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from coachw.agent.transcript import Transcript, classify, transcript_dir
+from coachw.agent.transcript import Transcript, classify, recent_conversation, transcript_dir
 
 
 def item(role: str, text: str, interrupted: bool = False) -> SimpleNamespace:
@@ -59,3 +59,28 @@ def test_write_failure_does_not_raise(tmp_path):
     t = Transcript(blocker, room="r", athlete_id="a")  # a file where the directory should be
     t.add("user", "hello")
     assert t.lines == 0
+
+
+def test_recent_conversation_is_this_athletes_last_words(tmp_path):
+    now = datetime(2026, 11, 22, 7, 40, tzinfo=UTC)
+    at = {"t": now - timedelta(minutes=45)}
+    clock = lambda: at["t"]  # noqa: E731
+    old = Transcript(tmp_path, room="coach-1", athlete_id="a-1", clock=clock)
+    old.add("user", "太久以前")
+    at["t"] = now - timedelta(minutes=10)
+    first = Transcript(tmp_path, room="coach-1", athlete_id="a-1", clock=clock)
+    first.add("user", "记一个改进点")
+    first.add("cue", "【教练提示】第 1 公里")
+    first.add("coach", "记下了")
+    other = Transcript(tmp_path, room="coach-2", athlete_id="b-2", clock=clock)
+    other.add("user", "别人的话")
+    at["t"] = now - timedelta(minutes=1)
+    later = Transcript(tmp_path, room="coach-3", athlete_id="a-1", clock=clock)
+    later.add("user", "你在吗")
+
+    lines = recent_conversation(tmp_path, "a-1", now, max_age_s=30 * 60, limit=10)
+    assert lines == [("user", "记一个改进点"), ("coach", "记下了"), ("user", "你在吗")]
+    assert recent_conversation(tmp_path, "a-1", now, max_age_s=30 * 60, limit=1) == [
+        ("user", "你在吗")
+    ]
+    assert recent_conversation(tmp_path / "none", "a-1", now, max_age_s=60, limit=5) == []

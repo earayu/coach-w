@@ -6,14 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from coachw.coach.director import GOAL_KEY
-from coachw.coach.events import (
-    Alert,
-    SplitTrend,
-    Sustained,
-    WindowPair,
-    WindowVsBaseline,
-    WindowVsTarget,
-)
+from coachw.coach.events import Alert, SplitTrend, Sustained, WindowVsBaseline, WindowVsTarget
 from coachw.coach.format import (
     format_pace_seconds,
     pace_seconds,
@@ -51,28 +44,6 @@ PACE_MIN_S = 150  # 2'30" per km
 PACE_MAX_S = 900  # 15'00" per km
 GOAL_MAX_KM = 100
 
-# Readings no runner produces (COCH-15: a bike ride recorded as a run got its "kilometres"
-# praised). Faster than 6'40" per km needs well over 120 steps a minute, and nobody holds
-# 2'30" per km: the 10 km world record is about 2'37".
-RUNNING_SPEED_MPS = 2.5
-MAX_RUN_CADENCE_SPM = 120.0
-MAX_RUN_SPEED_MPS = 6.5
-NOT_RUNNING_ALERT = Alert(
-    CuePriority.CORRECTION, 600, 30, Haptic.NOTIFICATION, "不像在跑步", key="not_running"
-)
-NOT_RUNNING_HINT = (
-    "这不像是跑出来的数据，更像在骑车或坐车。不要夸配速，也不要当成跑步来点评；"
-    "直接问用户是不是在骑车，是的话提醒他在手表上结束跑步、换成骑行，记录才准。"
-)
-
-
-def _not_running(split: Split) -> bool:
-    cadence = split.means.get("cadence_spm")
-    fast = split.duration_s < 1000 / RUNNING_SPEED_MPS
-    return split.duration_s < 1000 / MAX_RUN_SPEED_MPS or (
-        fast and cadence is not None and cadence <= MAX_RUN_CADENCE_SPM
-    )
-
 
 def _defaults(athlete: Athlete) -> dict[str, float]:
     max_hr = athlete.max_hr_bpm or DEFAULT_MAX_HR_BPM
@@ -99,9 +70,7 @@ def _split_facts(split: Split) -> str:
         text += f"，平均心率 {hr:.0f}"
     if (cadence := split.means.get("cadence_spm")) is not None:
         text += f"，平均步频每分钟 {cadence:.0f} 步"
-    if _not_running(split):
-        return f"{text}。{NOT_RUNNING_HINT}"
-    return text + "。播报这一公里的用时，简短点评并鼓励。"
+    return text + "。播报这一公里的用时，简短点评。"
 
 
 def _pace_trend_facts(values: Sequence[float], splits: Sequence[Split]) -> str:
@@ -165,10 +134,6 @@ PROMPT = """\
 - 配速读作"每公里几分几秒"；步频读作"每分钟多少步"；距离超过一千米读成公里。
 - 用户说出目标配速、想调整快慢、或说今天要跑几公里时，调用 adjust_target_pace。
 - 心率过高时安全优先，让用户放慢或停下走一走。
-- 用跑步常识判断数据：大众跑者配速多在每公里五分到八分，\
-步频每分钟一百五十到一百九十步；配速越快心率通常越高。
-- 数据和常识对不上时（比如配速很快但步频一百出头、心率很低，或者快过世界纪录），\
-不要夸，直接问用户是不是在骑车或坐车，或者手表数据有问题。
 """
 
 RUNNING = ActivityProfile(
@@ -215,30 +180,6 @@ RUNNING = ActivityProfile(
             ),
             facts=lambda v, t, s: (
                 f"心率 {v:.0f}，已经连续 {s:.0f} 秒高于目标上限 {t:.0f}。建议放慢一点、调整呼吸。"
-            ),
-        ),
-        WindowPair(
-            kind="not_running_cadence",
-            field="speed_mps",
-            at_least=RUNNING_SPEED_MPS,
-            other="cadence_spm",
-            at_most=MAX_RUN_CADENCE_SPM,
-            window_s=60,
-            alert=NOT_RUNNING_ALERT,
-            facts=lambda v, c: (
-                f"最近一分钟平均配速{say_pace(1000 / v)}，步频却只有每分钟 {c:.0f} 步。"
-                + NOT_RUNNING_HINT
-            ),
-        ),
-        Sustained(
-            kind="not_running_speed",
-            field="speed_mps",
-            threshold=MAX_RUN_SPEED_MPS,
-            for_s=60,
-            alert=NOT_RUNNING_ALERT,
-            facts=lambda v, t, s: (
-                f"已经连续 {s:.0f} 秒配速快过{say_pace(1000 / t)}，最近是{say_pace(1000 / v)}，"
-                "比跑步世界纪录还快。" + NOT_RUNNING_HINT
             ),
         ),
         WindowVsTarget(

@@ -8,12 +8,14 @@ import os
 
 private let log = Logger(subsystem: "com.earayu.coachw", category: "voice")
 
-/// The voice link to the coach: one LiveKit room per session (spec 7.1).
+/// The voice link to the coach (spec 7.1). The token API hands back the same room for every
+/// reconnect until LiveKit closes it, so a rejoin finds the same coach (spec 7.4).
 ///
 /// The only file that imports LiveKit. LiveKit's automatic audio session setup
 /// uses `.playAndRecord` with Bluetooth HFP/A2DP, which is what the headphones need.
 ///
-/// When the link drops it keeps trying with a fresh token (spec 7.4) until the user ends the voice
+/// When the link drops, or the coach stops answering heartbeats, it keeps trying with a fresh token
+/// (spec 7.4) until the user ends the voice
 /// session or the server says no; meanwhile `needsLocalFallback` tells the app to announce key
 /// cues itself. Each new session gets the workout so far as `coach.resume`.
 @MainActor
@@ -84,6 +86,15 @@ final class VoiceSession: NSObject {
     @ObservationIgnored private var retryAttempt = 0
     @ObservationIgnored private let policy = ReconnectPolicy()
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
+    @ObservationIgnored private var heartbeat: Task<Void, Never>?
+
+    /// The coach answers this RPC (`server/src/coachw/session.py`). On mobile data the link died
+    /// without LiveKit noticing for 30-90 s, and nobody heard the athlete meanwhile (COCH-15):
+    /// unanswered pings end the link after about 10 s and the phone rejoins its room.
+    static let heartbeatMethod = "coach.ping"
+    static let heartbeatInterval: Duration = .seconds(5)
+    static let heartbeatTimeout: TimeInterval = 4
+    static let heartbeatMisses = 2
 
     var isActive: Bool {
         switch status {
@@ -122,6 +133,7 @@ final class VoiceSession: NSObject {
         generation += 1
         retryTask?.cancel()
         retryTask = nil
+        stopHeartbeat()
         stopPathMonitor()
         let room = self.room
         self.room = nil
@@ -203,6 +215,7 @@ final class VoiceSession: NSObject {
                 try? await Task.sleep(for: .seconds(4))
                 MicMeter.logAudioState("4s after connect")
             }
+            startHeartbeat(in: room)
             // an agent that is already here gets the workout now; one that joins later on arrival
             if room.remoteParticipants.values.contains(where: { $0.kind == .agent }) { await sendResume() }
         } catch {
@@ -233,6 +246,7 @@ final class VoiceSession: NSObject {
     private func giveUp(_ message: String) {
         retryTask?.cancel()
         retryTask = nil
+        stopHeartbeat()
         stopPathMonitor()
         isCoachSpeaking = false
         isUserSpeaking = false
@@ -242,6 +256,7 @@ final class VoiceSession: NSObject {
     /// The link of a connected session went away.
     private func linkDropped(_ error: LiveKitError?) {
         room = nil
+        stopHeartbeat()
         sendTail?.cancel()
         sendTail = nil
         isCoachSpeaking = false
@@ -254,6 +269,49 @@ final class VoiceSession: NSObject {
         log.info("voice link lost: \(error.map { String(describing: $0.type) } ?? "no error", privacy: .public)")
         onLinkLost?()
         scheduleRetry()
+    }
+
+    /// Pings the coach while this room is current. A coach that never answers means the link is
+    /// dead even if LiveKit still says connected or reconnecting: drop it and rejoin.
+    private func startHeartbeat(in room: Room) {
+        stopHeartbeat()
+        let id = ObjectIdentifier(room)
+        heartbeat = Task { [weak self] in
+            var misses = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.heartbeatInterval)
+                guard !Task.isCancelled, let self, self.isCurrent(id) else { return }
+                // no coach in the room yet (or it left, which is handled on its own)
+                guard let coach = room.remoteParticipants.values.first(where: { $0.kind == .agent }),
+                      let identity = coach.identity
+                else { continue }
+                do {
+                    _ = try await room.localParticipant.performRpc(
+                        destinationIdentity: identity, method: Self.heartbeatMethod, payload: "",
+                        responseTimeout: Self.heartbeatTimeout, maxRoundTripLatency: Self.heartbeatTimeout
+                    )
+                    misses = 0
+                } catch let error as RpcError where error.code == RpcError.BuiltInError.unsupportedMethod.code {
+                    diag("voice", "coach does not answer heartbeats; heartbeat off")
+                    return
+                } catch is CancellationError {
+                    return
+                } catch {
+                    misses += 1
+                    diag("voice", "heartbeat missed (\(misses)): \(error.localizedDescription)")
+                    guard misses >= Self.heartbeatMisses, self.isCurrent(id), self.isActive else { continue }
+                    diag("voice", "coach unreachable for \(misses) heartbeats; rejoining")
+                    self.linkDropped(nil)
+                    await room.disconnect()
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopHeartbeat() {
+        heartbeat?.cancel()
+        heartbeat = nil
     }
 
     private static func drop(for error: Error) -> ReconnectPolicy.Drop {

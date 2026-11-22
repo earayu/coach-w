@@ -1,4 +1,4 @@
-"""LiveKit join tokens: one fresh room per session, coach agent dispatched by the token."""
+"""LiveKit join tokens for the athlete's room; the coach agent is dispatched by the token."""
 
 from __future__ import annotations
 

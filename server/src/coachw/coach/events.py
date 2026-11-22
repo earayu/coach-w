@@ -169,34 +169,6 @@ class WindowVsTarget:
 
 
 @dataclass(frozen=True, slots=True)
-class WindowPair:
-    """Over the last `window_s`, the mean of `field` is at least `at_least` while the mean of
-    `other` is at most `at_most`: two readings that cannot both be true for the activity (e.g. a
-    running pace with a cadence far too low to run it, which is someone on a bike).
-
-    `facts(field_mean, other_mean)` words the event.
-    """
-
-    kind: str
-    field: str
-    at_least: float
-    other: str
-    at_most: float
-    window_s: float
-    alert: Alert
-    facts: Callable[[float, float], str]
-
-    def evaluate(self, ctx: RuleContext) -> CoachEvent | None:
-        first = ctx.state.window(self.field, self.window_s)
-        second = ctx.state.window(self.other, self.window_s)
-        if first is None or second is None:
-            return None
-        if first.mean < self.at_least or second.mean > self.at_most:
-            return None
-        return self.alert.event(self.kind, self.facts(first.mean, second.mean))
-
-
-@dataclass(frozen=True, slots=True)
 class SplitTrend:
     """The last `steps` completed splits each moved by at least `min_step` in one direction
     (`+1` rising, `-1` falling) on `metric(split)`. Fires once per new split.

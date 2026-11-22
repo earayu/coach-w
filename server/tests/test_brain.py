@@ -90,6 +90,7 @@ def test_heart_rate_emergency_reaches_the_watch():
     [d] = [d for d in s.deliveries if d.cue.event.kind == "hr_emergency"]
     assert d.cue.priority is CuePriority.EMERGENCY
     assert "188" in d.instructions and "184" in d.instructions
+    assert "常识" not in d.instructions  # safety first, no second thoughts
     cue = d.watch
     assert isinstance(cue, CoachCue)
     assert cue.haptic is Haptic.FAILURE and cue.text == "心率过高"
@@ -286,3 +287,11 @@ def test_a_new_workout_is_noticed_even_when_the_end_frame_was_lost():
     s.run.run(30)
     assert s.kinds().count("start") == 2
     assert s.brain.state.elapsed_s == 30
+
+
+def test_non_urgent_cues_ask_the_coach_to_sanity_check_the_numbers():
+    s = Session()
+    s.run.run(400, speed=1000 / 300)
+    [split] = [d for d in s.deliveries if d.cue.event.kind.startswith("split")]
+    assert "常识" in split.instructions and "跑步" in split.instructions
+    assert "鼓励" not in split.instructions

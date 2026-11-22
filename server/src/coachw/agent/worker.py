@@ -10,14 +10,21 @@ import asyncio
 import contextlib
 import logging
 import os
+from datetime import UTC, datetime
 from typing import Any
 
 from livekit import rtc
 from livekit.agents import AgentServer, AgentSession, JobContext, cli
 
-from coachw.agent.coach import GREETING, SESSION_CAP_FAREWELL, CoachAgent, cap_farewell
+from coachw.agent.coach import (
+    GREETING,
+    RECONNECT_GREETING,
+    SESSION_CAP_FAREWELL,
+    CoachAgent,
+    cap_farewell,
+)
 from coachw.agent.loop import CoachLoop
-from coachw.agent.transcript import Transcript, transcript_dir
+from coachw.agent.transcript import Transcript, recent_conversation, transcript_dir
 from coachw.coach.brain import CoachBrain
 from coachw.profiles.base import Athlete
 from coachw.protocol import (
@@ -30,7 +37,7 @@ from coachw.protocol import (
     ProtocolError,
 )
 from coachw.providers import get_realtime_model
-from coachw.session import AGENT_NAME, SessionMeta
+from coachw.session import AGENT_NAME, HEARTBEAT_METHOD, SessionMeta
 
 logger = logging.getLogger("coachw.agent")
 
@@ -59,6 +66,9 @@ def read_session_meta(participant: rtc.RemoteParticipant) -> SessionMeta:
         return SessionMeta(athlete_id="unknown", max_session_s=fallback)
 
 
+# A new coach continues what was said this recently (COCH-15), up to this many lines.
+HISTORY_MAX_AGE_S = 30 * 60
+HISTORY_LINES = 30
 # How long a new session waits for `coach.resume` before greeting as if the workout is new.
 RESUME_WAIT_S = 2.0
 # Packets kept while the athlete is not known yet (the agent joins after the phone).
@@ -167,9 +177,14 @@ async def end_when_cap_reached(
     ctx.shutdown("session cap reached")
 
 
+def answer_heartbeat(_data: rtc.RpcInvocationData) -> str:
+    return "pong"
+
+
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
+    ctx.room.local_participant.register_rpc_method(HEARTBEAT_METHOD, answer_heartbeat)
     inbox = AthleteInbox()
     ctx.room.on("data_received", inbox.on_data)
     participant = await ctx.wait_for_participant()
@@ -182,7 +197,20 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session = AgentSession(llm=get_realtime_model(os.environ.get("COACHW_PROVIDER", "qwen")))
     directory = transcript_dir()
-    agent = CoachAgent(brain, keeps_transcript=directory is not None)
+    history = (
+        recent_conversation(
+            directory,
+            meta.athlete_id,
+            datetime.now(UTC),
+            max_age_s=HISTORY_MAX_AGE_S,
+            limit=HISTORY_LINES,
+        )
+        if directory is not None
+        else []
+    )
+    if history:
+        logger.info("continuing the conversation from %d earlier lines", len(history))
+    agent = CoachAgent(brain, keeps_transcript=directory is not None, history=history)
     turns = TurnLog()
     turns.attach(session)
     if directory is not None:
@@ -211,7 +239,10 @@ async def entrypoint(ctx: JobContext) -> None:
 
     # The greeting goes first: it is an `instructions=` reply, which Qwen only follows while the
     # conversation has no user turn yet, and cues are user turns (spec 4.2, 14.1).
-    session.generate_reply(instructions=await greeting_for(brain, inbox))
+    greeting = await greeting_for(brain, inbox)
+    if history and greeting == GREETING:
+        greeting = RECONNECT_GREETING
+    session.generate_reply(instructions=greeting)
     coach = asyncio.create_task(CoachLoop(brain, agent, session, publish_cue).run())
     ctx.add_shutdown_callback(lambda: _cancel(coach))
 

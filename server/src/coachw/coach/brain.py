@@ -54,10 +54,19 @@ class Delivery:
     watch: CoachCue | None
 
 
-def cue_instructions(cue: Cue) -> str:
+def cue_instructions(cue: Cue, activity: str | None = None) -> str:
+    # The realtime model does not apply common sense unless asked at the moment it speaks: told
+    # once in the system prompt, it still praised a bike ride's 4'22" "kilometre" at 72 steps a
+    # minute (COCH-15, measured on qwen-audio-3.1-realtime-flash). Safety cues stay immediate.
+    check = (
+        ""
+        if cue.priority is CuePriority.EMERGENCY or activity is None
+        else f"说之前先用常识想一想，这些数据放在用户正在做的{activity}里说不说得通；"
+        "说不通就直说哪里不对、问用户怎么回事，不要夸。"
+    )
     return (
         f"【教练提示】{cue.event.facts}\n"
-        f"{PRIORITY_TONE[cue.priority]}。用自然的中文口语对用户说出来，"
+        f"{check}{PRIORITY_TONE[cue.priority]}。用自然的中文口语对用户说出来，"
         "只使用这里给出的数字，不要补充其他数字，不要提到这是系统提示。"
     )
 
@@ -209,7 +218,8 @@ class CoachBrain:
                 haptic=cue.event.haptic,
                 text=cue.event.watch_text,
             )
-        return Delivery(cue, cue_instructions(cue), release.interrupt, watch)
+        label = self.profile.label if self.profile else None
+        return Delivery(cue, cue_instructions(cue, label), release.interrupt, watch)
 
     # -- summaries and tools -------------------------------------------------------------------
 

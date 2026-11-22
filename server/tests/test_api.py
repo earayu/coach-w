@@ -98,8 +98,12 @@ def test_valid_invite_gets_scoped_token(client: TestClient, clock: Clock):
     assert payload["exp"] - time.time() == pytest.approx(600, abs=2)  # signed with real time
 
 
-def test_every_session_gets_its_own_room(client: TestClient):
-    assert start(client).json()["room"] != start(client).json()["room"]
+def test_an_athlete_keeps_one_room_until_livekit_finishes_it(client: TestClient):
+    first = start(client).json()["room"]
+    assert start(client).json()["room"] == first  # a reconnect lands with the same coach
+    assert start(client, athlete=other_athlete()).json()["room"] != first
+    webhook(client, "room_finished", first, "")
+    assert start(client).json()["room"] != first
 
 
 def test_token_expires_quickly(client: TestClient):
@@ -144,13 +148,19 @@ def test_reconnect_is_not_blocked_by_the_dropped_session(client: TestClient, clo
     clock.now += 2 * 60
     # the link dropped; LiveKit has not noticed yet, so the first session is still "in the room"
     second = start(client).json()
+    assert second["room"] == first["room"]
     assert second["max_session_s"] == 20 * 60  # 2 of 30 minutes spent, not the 20 reserved
     clock.now += 30
-    webhook(client, "participant_left", first["room"], ATHLETE)
+    # the rejoin can reach LiveKit before it lets go of the dropped connection
     webhook(client, "participant_joined", second["room"], ATHLETE)
-    # another phone on the invite sees both: 2.5 minutes spent and a 20-minute reservation
+    webhook(client, "participant_left", first["room"], ATHLETE)
+    # another phone on the invite sees one session still in the room with its 20-minute cap
     third = start(client, athlete=other_athlete()).json()
-    assert third["max_session_s"] == 7 * 60 + 30
+    assert third["max_session_s"] == 10 * 60
+    clock.now += 25 * 60
+    webhook(client, "participant_left", second["room"], ATHLETE)
+    # 27.5 minutes in the room, counted once
+    assert start(client, athlete=other_athlete()).json()["max_session_s"] == 150
 
 
 def test_retries_without_joining_do_not_use_up_the_day(client: TestClient):

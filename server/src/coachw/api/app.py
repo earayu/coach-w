@@ -36,6 +36,9 @@ class SessionResponse(BaseModel):
 def create_app(settings: ApiSettings, clock: Callable[[], float] = time.time) -> FastAPI:
     app = FastAPI(title="coach-w token API", docs_url=None, redoc_url=None)
     ledger = MinuteLedger(settings.quota_tz)
+    # One room per athlete until LiveKit finishes it: a phone that reconnects (its own retry, a
+    # fresh token) lands back with the same coach and conversation instead of a new one (COCH-15).
+    rooms: dict[tuple[str, str], str] = {}
     webhooks = api.WebhookReceiver(
         api.TokenVerifier(settings.livekit_api_key, settings.livekit_api_secret)
     )
@@ -58,28 +61,42 @@ def create_app(settings: ApiSettings, clock: Callable[[], float] = time.time) ->
             raise HTTPException(401, "unknown invite code")
 
         now = clock()
+        key = (invite.code, athlete_id)
         ledger.supersede(invite.code, athlete_id)
         remaining = invite.daily_minutes * 60 - ledger.used_s(invite.code, now)
-        if remaining < settings.min_session_s:
+        room = rooms.get(key)
+        reused = room is not None and ledger.reuse(
+            room, invite.code, athlete_id, now, settings.token_ttl_s
+        )
+        if not reused and remaining < settings.min_session_s:
             logger.info("rejected: daily minutes used up athlete_id=%s", athlete_id)
             raise HTTPException(429, "daily voice minutes used up")
 
+        # a live room's coach keeps the cap it started with; this one applies if it restarts
         meta = SessionMeta(athlete_id, int(min(remaining, settings.session_max_s)))
         issued = issue_token(
             api_key=settings.livekit_api_key,
             api_secret=settings.livekit_api_secret,
             meta=meta,
-            room=new_room_name(),
+            room=room if reused and room else new_room_name(),
             ttl_s=settings.token_ttl_s,
         )
-        ledger.reserve(
-            invite.code, issued.room, issued.identity, meta.max_session_s, now, settings.token_ttl_s
-        )
+        if not reused:
+            ledger.reserve(
+                invite.code,
+                issued.room,
+                issued.identity,
+                meta.max_session_s,
+                now,
+                settings.token_ttl_s,
+            )
+            rooms[key] = issued.room
         logger.info(
-            "issued athlete_id=%s room=%s max_session_s=%d",
+            "issued athlete_id=%s room=%s max_session_s=%d reused=%s",
             athlete_id,
             issued.room,
             meta.max_session_s,
+            reused,
         )
         return SessionResponse(
             server_url=settings.livekit_public_url,
@@ -101,5 +118,8 @@ def create_app(settings: ApiSettings, clock: Callable[[], float] = time.time) ->
             ledger.joined(event.room.name, event.participant.identity, now)
         elif event.event == "participant_left":
             ledger.left(event.room.name, event.participant.identity, now)
+        elif event.event == "room_finished":
+            for key in [k for k, room in rooms.items() if room == event.room.name]:
+                del rooms[key]
 
     return app

@@ -14,7 +14,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -93,3 +93,43 @@ class Transcript:
             self.lines += 1
         except OSError as e:
             logger.warning("transcript write failed: %s", type(e).__name__)
+
+
+def recent_conversation(
+    directory: Path,
+    athlete_id: str,
+    now: datetime,
+    *,
+    max_age_s: float,
+    limit: int,
+) -> list[tuple[str, str]]:
+    """What this athlete and the coach said in the last `max_age_s`, oldest first, at most `limit`
+    lines of `("user" | "coach", text)`.
+
+    A coach that starts after the link dropped for good (a new room) continues the conversation
+    from here instead of greeting a stranger (COCH-15).
+    """
+    since = now - timedelta(seconds=max_age_s)
+    days = {since.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")}
+    lines: list[tuple[datetime, str, str]] = []
+    for day in days:
+        for path in sorted((directory / day).glob("*.jsonl")):
+            try:
+                records = [json.loads(raw) for raw in path.read_text(encoding="utf-8").splitlines()]
+            except (OSError, ValueError):
+                continue
+            mine = False
+            for record in records:
+                if record.get("type") == "session":
+                    mine = record.get("athlete_id") == athlete_id
+                    continue
+                if not mine or record.get("type") not in ("user", "coach"):
+                    continue
+                try:
+                    ts = datetime.fromisoformat(record["ts"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if since <= ts <= now:
+                    lines.append((ts, record["type"], str(record.get("text", ""))))
+    lines.sort(key=lambda line: line[0])
+    return [(kind, text) for _, kind, text in lines[-limit:]]

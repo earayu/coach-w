@@ -25,6 +25,8 @@ class _Session:
     used_s: float = 0.0
     joined_at: float | None = None
     ever_joined: bool = False
+    present: int = 0
+    """Connections in the room: a rejoin can arrive before LiveKit lets go of the dropped one."""
     superseded: bool = False
     """The same athlete asked for a newer session: the phone holds one voice session at a time."""
 
@@ -80,14 +82,28 @@ class MinuteLedger:
             join_deadline=now + join_window_s,
         )
 
+    def reuse(self, room: str, key: str, identity: str, now: float, join_window_s: int) -> bool:
+        """The athlete's earlier session, rejoined in the same room (one room per workout,
+        COCH-15): it counts as before instead of being superseded. False if it is not known."""
+        s = self._rooms.get(room)
+        if s is None or s.key != key or s.identity != identity or s.day != self.day(now):
+            return False
+        s.superseded = False
+        s.join_deadline = max(s.join_deadline, now + join_window_s)
+        return True
+
     def joined(self, room: str, identity: str, at: float) -> None:
         s = self._rooms.get(room)
-        if s and s.identity == identity and s.joined_at is None:
-            s.joined_at = at
-            s.ever_joined = True
+        if s and s.identity == identity:
+            s.present += 1
+            if s.joined_at is None:
+                s.joined_at = at
+                s.ever_joined = True
 
     def left(self, room: str, identity: str, at: float) -> None:
         s = self._rooms.get(room)
         if s and s.identity == identity and s.joined_at is not None:
-            s.used_s += max(0.0, at - s.joined_at)
-            s.joined_at = None
+            s.present = max(0, s.present - 1)
+            if s.present == 0:
+                s.used_s += max(0.0, at - s.joined_at)
+                s.joined_at = None

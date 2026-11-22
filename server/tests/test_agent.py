@@ -17,6 +17,7 @@ from coachw.agent.coach import (
 from coachw.agent.worker import (
     AthleteInbox,
     TurnLog,
+    answer_heartbeat,
     end_when_cap_reached,
     read_session_meta,
 )
@@ -204,3 +205,14 @@ def test_turn_log_counts_without_keeping_words(caplog: pytest.LogCaptureFixture)
         "session summary: frames=12 user_turns=1 coach_replies=1 errors=1"
     )
     assert "心率" not in caplog.text
+
+
+def test_a_new_coach_continues_the_conversation_it_is_given():
+    text = instructions(True, [("user", "帮我记一下：要能查附近厕所"), ("coach", "记下了")])
+    assert "用户：帮我记一下：要能查附近厕所" in text and "教练：记下了" in text
+    assert "不要重新自我介绍" in text
+    assert "刚才的对话" not in instructions(True)
+
+
+def test_the_coach_answers_heartbeats():
+    assert answer_heartbeat(SimpleNamespace()) == "pong"
