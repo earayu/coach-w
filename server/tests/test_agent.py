@@ -7,7 +7,12 @@ from types import SimpleNamespace
 import pytest
 
 from coachw.agent.coach import INSTRUCTIONS
-from coachw.agent.worker import AthleteInbox, end_when_cap_reached, read_session_meta
+from coachw.agent.worker import (
+    AthleteInbox,
+    TurnLog,
+    end_when_cap_reached,
+    read_session_meta,
+)
 from coachw.coach.brain import CoachBrain
 from coachw.coach.format import format_pace
 from coachw.coach.metrics_state import STALE_AFTER_S, MetricsState
@@ -163,3 +168,17 @@ def test_cap_says_goodbye_then_closes_the_room():
 def test_prompt_forbids_guessing_numbers():
     assert "get_metrics" in INSTRUCTIONS
     assert "禁止估计" in INSTRUCTIONS
+
+
+def test_turn_log_counts_without_keeping_words(caplog: pytest.LogCaptureFixture) -> None:
+    turns = TurnLog()
+    with caplog.at_level("INFO", logger="coachw.agent"):
+        turns.on_user_input(SimpleNamespace(transcript="我现在心率多少", is_final=False))
+        turns.on_user_input(SimpleNamespace(transcript="我现在心率多少", is_final=True))
+        turns.on_item_added(SimpleNamespace(item=SimpleNamespace(role="user")))
+        turns.on_item_added(SimpleNamespace(item=SimpleNamespace(role="assistant")))
+        turns.on_error(SimpleNamespace(source=object(), error=TimeoutError()))
+    assert turns.summary(frames=12) == (
+        "session summary: frames=12 user_turns=1 coach_replies=1 errors=1"
+    )
+    assert "心率" not in caplog.text

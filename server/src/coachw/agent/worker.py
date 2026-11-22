@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import logging
 import os
+from typing import Any
 
 from livekit import rtc
 from livekit.agents import AgentServer, AgentSession, JobContext, cli
@@ -70,6 +71,7 @@ class AthleteInbox:
         self.brain: CoachBrain | None = None
         self.identity: str | None = None
         self.resumed = asyncio.Event()
+        self.frames = 0
         self._held: list[rtc.DataPacket] = []
 
     def attach(self, brain: CoachBrain, athlete_identity: str) -> None:
@@ -90,6 +92,9 @@ class AthleteInbox:
         try:
             if packet.topic == METRICS_TOPIC:
                 self.brain.on_frame(MetricsFrame.from_json(packet.data))
+                self.frames += 1
+                if self.frames == 1:
+                    logger.info("first metrics frame received")
             elif self.brain.resume(CoachResume.from_json(packet.data)):
                 # counts only, never the values: they are health data
                 logger.info("workout resumed with %d splits", len(self.brain.state.splits))
@@ -97,6 +102,44 @@ class AthleteInbox:
         except (ProtocolError, ValueError, TypeError) as e:
             # never log the payload: it is health data
             logger.warning("dropped bad %s packet: %s", packet.topic, type(e).__name__)
+
+
+class TurnLog:
+    """Counts what happened in a session so a silent coach can be told apart from a deaf one.
+
+    Logs only counts and lengths, never the words: they are the athlete's conversation (spec 11).
+    """
+
+    def __init__(self) -> None:
+        self.user_turns = 0
+        self.coach_replies = 0
+        self.errors = 0
+
+    def on_user_input(self, ev: Any) -> None:
+        if not ev.is_final:
+            return
+        self.user_turns += 1
+        logger.info("user turn transcribed chars=%d", len(ev.transcript))
+
+    def on_item_added(self, ev: Any) -> None:
+        if getattr(ev.item, "role", None) == "assistant":
+            self.coach_replies += 1
+
+    def on_error(self, ev: Any) -> None:
+        self.errors += 1
+        source, error = type(ev.source).__name__, type(ev.error).__name__
+        logger.warning("session error from %s: %s", source, error)
+
+    def attach(self, session: AgentSession) -> None:
+        session.on("user_input_transcribed", self.on_user_input)
+        session.on("conversation_item_added", self.on_item_added)
+        session.on("error", self.on_error)
+
+    def summary(self, frames: int) -> str:
+        return (
+            f"session summary: frames={frames} user_turns={self.user_turns} "
+            f"coach_replies={self.coach_replies} errors={self.errors}"
+        )
 
 
 async def greeting_for(brain: CoachBrain, inbox: AthleteInbox) -> str:
@@ -133,6 +176,13 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session = AgentSession(llm=get_realtime_model(os.environ.get("COACHW_PROVIDER", "qwen")))
     agent = CoachAgent(brain)
+    turns = TurnLog()
+    turns.attach(session)
+
+    async def log_summary() -> None:
+        logger.info(turns.summary(inbox.frames))
+
+    ctx.add_shutdown_callback(log_summary)
 
     async def publish_cue(cue: CoachCue) -> None:
         await ctx.room.local_participant.publish_data(

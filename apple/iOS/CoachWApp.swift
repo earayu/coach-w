@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             guard recorder.isRecording else { return }
             LocalSpeaker.shared.speak("网络断了，教练暂时离线。我先播报重要提醒，运动记录不受影响。")
         }
+        voice.onConnected = { LocalSpeaker.shared.yieldToVoiceCoach() }
         // Offline fallback (docs/spec.md 7.4): the phone speaks what the coach cannot, and the watch
         // still buzzes. While the coach is connected it handles both itself.
         recorder.onLocalCue = { local in

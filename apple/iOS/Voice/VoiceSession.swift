@@ -1,3 +1,4 @@
+import AVFoundation
 import CoachKit
 import Foundation
 import LiveKit
@@ -49,6 +50,8 @@ final class VoiceSession: NSObject {
     private(set) var status: Status = .idle
     private(set) var isMuted = false
     private(set) var isCoachSpeaking = false
+    /// LiveKit hears the user's microphone right now: shows the user the coach can hear them.
+    private(set) var isUserSpeaking = false
     private(set) var framesSent = 0
     private(set) var cuesReceived = 0
     private(set) var reconnects = 0
@@ -59,6 +62,8 @@ final class VoiceSession: NSObject {
     @ObservationIgnored var onCoachLine: (@MainActor (String) -> Void)?
     /// Called once each time an established link drops and offline fallback takes over.
     @ObservationIgnored var onLinkLost: (@MainActor () -> Void)?
+    /// Called each time a session is connected and its microphone is live.
+    @ObservationIgnored var onConnected: (@MainActor () -> Void)?
     /// The workout so far, for a session that joins mid-workout; nil when there is none.
     @ObservationIgnored var resumeProvider: (@MainActor () -> CoachResume?)?
 
@@ -83,8 +88,13 @@ final class VoiceSession: NSObject {
     /// The user wants the coach but cannot hear it right now: the phone speaks key cues itself.
     var needsLocalFallback: Bool { isActive && status != .connected }
 
+    @ObservationIgnored private let micMeter = MicMeter()
+
     func start(settings: AppSettings) async {
         guard !isActive else { return }
+        AudioManager.shared.remove(localAudioRenderer: micMeter)
+        AudioManager.shared.add(localAudioRenderer: micMeter)
+        MicMeter.logAudioState("before connect")
         self.settings = settings
         framesSent = 0
         cuesReceived = 0
@@ -92,6 +102,7 @@ final class VoiceSession: NSObject {
         retryAttempt = 0
         isMuted = false
         isCoachSpeaking = false
+        isUserSpeaking = false
         startPathMonitor()
         await connect()
     }
@@ -106,6 +117,7 @@ final class VoiceSession: NSObject {
         sendTail?.cancel()
         sendTail = nil
         isCoachSpeaking = false
+        isUserSpeaking = false
         status = .idle
         await room?.disconnect()
     }
@@ -173,7 +185,13 @@ final class VoiceSession: NSObject {
             if retryAttempt > 0 { reconnects += 1 }
             retryAttempt = 0
             status = .connected
+            onConnected?()
             log.info("joined room \(grant.room, privacy: .public)")
+            MicMeter.logAudioState("after connect")
+            Task {
+                try? await Task.sleep(for: .seconds(4))
+                MicMeter.logAudioState("4s after connect")
+            }
             // an agent that is already here gets the workout now; one that joins later on arrival
             if room.remoteParticipants.values.contains(where: { $0.kind == .agent }) { await sendResume() }
         } catch {
@@ -206,6 +224,7 @@ final class VoiceSession: NSObject {
         retryTask = nil
         stopPathMonitor()
         isCoachSpeaking = false
+        isUserSpeaking = false
         status = .failed(message)
     }
 
@@ -215,6 +234,7 @@ final class VoiceSession: NSObject {
         sendTail?.cancel()
         sendTail = nil
         isCoachSpeaking = false
+        isUserSpeaking = false
         // the server closed the session on purpose (time cap, removed): do not start a new one
         if let type = error?.type, [.roomDeleted, .participantRemoved, .duplicateIdentity].contains(type) {
             giveUp("教练会话已结束")
@@ -311,6 +331,44 @@ final class VoiceSession: NSObject {
     }
 }
 
+/// Logs the microphone level LiveKit actually captures, every few seconds, plus the audio session
+/// it runs in. On device the coach heard pure digital silence from the phone (COCH-12); this tells
+/// a silent capture apart from a network or server problem. Levels only, never audio.
+final class MicMeter: NSObject, AudioRenderer, @unchecked Sendable {
+    private let lock = NSLock()
+    private var peak: Float = 0
+    private var frames = 0
+    private var since = Date()
+
+    func render(pcmBuffer: AVAudioPCMBuffer) {
+        var bufferPeak: Float = 0
+        if let channel = pcmBuffer.floatChannelData?[0] {
+            for i in 0..<Int(pcmBuffer.frameLength) { bufferPeak = max(bufferPeak, abs(channel[i])) }
+        } else if let channel = pcmBuffer.int16ChannelData?[0] {
+            for i in 0..<Int(pcmBuffer.frameLength) { bufferPeak = max(bufferPeak, Float(abs(Int(channel[i]))) / 32768) }
+        }
+        lock.lock()
+        peak = max(peak, bufferPeak)
+        frames += Int(pcmBuffer.frameLength)
+        let due = Date().timeIntervalSince(since) >= 3
+        let report = due ? (peak, frames) : nil
+        if due { peak = 0; frames = 0; since = Date() }
+        lock.unlock()
+        if let (p, n) = report {
+            log.info("mic peak \(String(format: "%.4f", p), privacy: .public) over \(n, privacy: .public) frames")
+        }
+    }
+
+    static func logAudioState(_ context: String) {
+        let session = AVAudioSession.sharedInstance()
+        let inputs = session.currentRoute.inputs.map { "\($0.portType.rawValue)" }.joined(separator: ",")
+        let outputs = session.currentRoute.outputs.map { "\($0.portType.rawValue)" }.joined(separator: ",")
+        log.info(
+            "audio \(context, privacy: .public): category \(session.category.rawValue, privacy: .public) mode \(session.mode.rawValue, privacy: .public) in [\(inputs, privacy: .public)] out [\(outputs, privacy: .public)] inputAvailable \(session.isInputAvailable, privacy: .public) permission \(AVAudioApplication.shared.recordPermission.rawValue, privacy: .public) engineRunning \(AudioManager.shared.isEngineRunning, privacy: .public) micMuted \(AudioManager.shared.isMicrophoneMuted, privacy: .public)"
+        )
+    }
+}
+
 extension VoiceSession: RoomDelegate {
     nonisolated func room(_ room: Room, didUpdateConnectionState connectionState: ConnectionState, from oldConnectionState: ConnectionState) {
         let id = ObjectIdentifier(room)
@@ -328,6 +386,19 @@ extension VoiceSession: RoomDelegate {
         }
     }
 
+    /// The coach left while the phone stayed in the room (its job ended, or the agent server
+    /// restarted): nobody would ever answer again, so start a fresh session as after a drop.
+    nonisolated func room(_ room: Room, participantDidDisconnect participant: RemoteParticipant) {
+        guard participant.kind == .agent else { return }
+        let id = ObjectIdentifier(room)
+        Task { @MainActor in
+            guard self.isCurrent(id), self.status == .connected else { return }
+            log.info("coach left the room; starting a new session")
+            self.linkDropped(nil)
+            await room.disconnect()
+        }
+    }
+
     nonisolated func room(_ room: Room, participantDidConnect participant: RemoteParticipant) {
         guard participant.kind == .agent else { return }
         let id = ObjectIdentifier(room)
@@ -340,9 +411,11 @@ extension VoiceSession: RoomDelegate {
     nonisolated func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
         let id = ObjectIdentifier(room)
         let speaking = participants.contains { $0.kind == .agent }
+        let userSpeaking = participants.contains { $0 is LocalParticipant }
         Task { @MainActor in
             guard self.isCurrent(id) else { return }
             self.isCoachSpeaking = speaking
+            self.isUserSpeaking = userSpeaking
         }
     }
 

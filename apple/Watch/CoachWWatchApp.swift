@@ -7,6 +7,11 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
     func handle(_ workoutConfiguration: HKWorkoutConfiguration) {
         Task { await WorkoutController.shared.start(workoutConfiguration) }
     }
+
+    /// Called when watchOS relaunches the app while one of its workouts is still running.
+    func handleActiveWorkoutRecovery() {
+        Task { await WorkoutController.shared.recover() }
+    }
 }
 
 @main

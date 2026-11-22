@@ -58,29 +58,60 @@ final class WorkoutController: NSObject {
             log.info("ignoring start: a workout is already running")
             return
         }
-        let activity = WorkoutActivity(healthKitType: configuration.activityType)
         do {
             let session = try HKWorkoutSession(healthStore: healthStore, configuration: configuration)
-            let builder = session.associatedWorkoutBuilder()
-            session.delegate = self
-            builder.delegate = self
-            builder.dataSource = HKLiveWorkoutDataSource(healthStore: healthStore, workoutConfiguration: configuration)
-            self.session = session
-            self.builder = builder
-            self.activity = activity
-            frames = FrameBuilder(activity: activity.wireName, minInterval: 0.9)
-            lastError = nil
-
+            let builder = adopt(session)
             try await session.startMirroringToCompanionDevice()
             let startDate = Date()
             session.startActivity(with: startDate)
             try await builder.beginCollection(at: startDate)
-            if activity.usesGPS { startRoute(builder) }
+            if activity?.usesGPS == true { startRoute(builder) }
         } catch {
             log.error("failed to start workout: \(error.localizedDescription)")
             lastError = "开始运动失败：\(error.localizedDescription)"
+            // a half-started session would keep running (and mirroring) with nobody feeding it
+            session?.end()
             reset()
         }
+    }
+
+    /// Picks up the workout that was running when the app quit or crashed. watchOS relaunches the
+    /// app for it; without this the session keeps running but no frame reaches the iPhone again.
+    func recover() async {
+        guard session == nil else { return }
+        do {
+            guard let session = try await healthStore.recoverActiveWorkoutSession() else { return }
+            log.info("recovered active workout session")
+            let builder = adopt(session)
+            state = session.state
+            updateHeartbeat()
+            if activity?.usesGPS == true { startRoute(builder) }
+            do {
+                try await session.startMirroringToCompanionDevice()
+            } catch {
+                // still mirroring from before the relaunch
+                log.info("mirroring after recovery: \(error.localizedDescription, privacy: .public)")
+            }
+            ingest([], elapsed: builder.elapsedTime, force: true)
+        } catch {
+            log.error("workout recovery failed: \(error.localizedDescription, privacy: .public)")
+            lastError = "恢复运动失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func adopt(_ session: HKWorkoutSession) -> HKLiveWorkoutBuilder {
+        let configuration = session.workoutConfiguration
+        let activity = WorkoutActivity(healthKitType: configuration.activityType)
+        let builder = session.associatedWorkoutBuilder()
+        session.delegate = self
+        builder.delegate = self
+        builder.dataSource = HKLiveWorkoutDataSource(healthStore: healthStore, workoutConfiguration: configuration)
+        self.session = session
+        self.builder = builder
+        self.activity = activity
+        frames = FrameBuilder(activity: activity.wireName, minInterval: 0.9)
+        lastError = nil
+        return builder
     }
 
     private func startRoute(_ builder: HKLiveWorkoutBuilder) {
