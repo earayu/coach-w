@@ -37,12 +37,12 @@ INSTRUCTIONS = """\
 - 数据不合常识时直说哪里不对，问用户怎么回事，不要照着念，更不要夸。【教练提示】里的"鼓励""夸奖"只是默认语气，和常识冲突时以常识为准。
 
 你一直看得到用户手表上的数据：
-- 对话里最新的一条【运动状态】带着"手表此刻的实时数据"，用户每次开口时都会刷新成他开口那一刻的数据。
-- 用户问心率、配速、步频这类当前数据（语音识别常有同音错字，按上下文理解他想问什么），直接用最新一条【运动状态】里的实时数据回答，一句话说完。对用户直接说"你现在心率多少多少"，不要提"运动状态""系统""工具"这些内部说法。
-- 绝不说自己看不到数据、没在看、懒得查、"得看手表传过来的数据"之类的话。最新【运动状态】里写着没有实时数据时，直说手表现在没传来这项数据。
+- 这份说明最后的【运动状态】带着"手表此刻的实时数据"，用户每次开口时都会刷新成他开口那一刻的数据，比对话里任何旧数字都新。
+- 用户问心率、配速、步频这类当前数据（语音识别常有同音错字，按上下文理解他想问什么），直接用【运动状态】里的实时数据回答，一句话说完。对用户直接说"你现在心率多少多少"，不要提"运动状态""系统""工具"这些内部说法。
+- 绝不说自己看不到数据、没在看、懒得查、"得看手表传过来的数据"之类的话。【运动状态】里写着没有实时数据时，直说手表现在没传来这项数据。
 
 数字规则（最重要）：
-- 你说出的每一个运动数字（心率、配速、距离、时间、步频、功率、卡路里等）都必须来自最新一条【运动状态】、本轮刚调用的工具结果（get_metrics、get_progress、end_workout_summary），或本轮【教练提示】里给出的数字。
+- 你说出的每一个运动数字（心率、配速、距离、时间、步频、功率、卡路里等）都必须来自【运动状态】、本轮刚调用的工具结果（get_metrics、get_progress、end_workout_summary），或本轮【教练提示】里给出的数字。
 - 要分段、目标、剩余距离或更多指标时，调用 get_progress 或 get_metrics 再回答。只回答用户这一次问的那几项，不要重复你之前说过的话。
 - 禁止估计、推算、编造或沿用之前记住的数字：旧的工具结果和你说过的数字都已经过时。哪里都没有某项数据，或工具返回 available 为 false，就直接说现在拿不到这项数据。
 - get_metrics 结果里的 spoken 是当前运动下每项指标的口语读法，照着读（有的运动读速度而不是配速）。
@@ -50,7 +50,7 @@ INSTRUCTIONS = """\
 
 系统消息：
 - 以【教练提示】开头的消息不是用户说的话，而是教练系统决定你现在要主动对用户说的内容：不要回答"好的"，直接用一句自然的口语对用户说出来，只用里面的数字。
-- 以【运动状态】开头的消息是手表数据和背景信息，不要回复它，也不要主动念出来；用户问到时用它回答。
+- 【运动状态】是手表数据和背景信息，不要主动念出来；用户问到时用它回答。
 
 工具：
 - 用户说"安静一会儿"、"别说话了"时调用 set_quiet，默认 5 分钟；说"可以说话了"时用 0 分钟取消。静音期间安全提醒照常。
@@ -143,34 +143,42 @@ class CoachAgent(Agent):
         history: Sequence[tuple[str, str]] = (),
         places: PlaceLookup | None = None,
     ) -> None:
-        self._instructions = instructions(keeps_transcript, history)
-        super().__init__(instructions=self._instructions)
+        self._base_instructions = instructions(keeps_transcript, history)
+        super().__init__(instructions=self._base_instructions)
         self.brain = brain
         self._places = places
         self._base_tools = list(self.tools)
-        self._status_id: str | None = None
+        self._profile_prompt = ""
+        self._status = ""
         self._status_lock = asyncio.Lock()
+
+    async def _send_instructions(self) -> None:
+        parts = [self._base_instructions, self._profile_prompt, self._status]
+        await self.update_instructions("\n".join(p for p in parts if p))
 
     async def apply_profile(self) -> None:
         """Load the current profile's prompt fragment and tools into the live session."""
         profile = self.brain.profile
         if profile is None:
             return
-        await self.update_instructions(self._instructions + "\n" + profile.prompt)
+        async with self._status_lock:
+            self._profile_prompt = profile.prompt
+            await self._send_instructions()
         await self.update_tools(
             self._base_tools + [profile_tool(self.brain, t) for t in profile.tools]
         )
         logger.info("profile loaded: %s", profile.name)
 
     async def inject_status(self, text: str) -> None:
-        """Replace the previous status summary in the conversation without asking for a reply."""
+        """Replace the status summary at the end of the session instructions; asks no reply.
+
+        Not a conversation item: Qwen often ignored a mid-conversation system item and answered
+        with an older number or a made-up one, while it follows the session instructions
+        (measured 2026-11-23, spec 14.1)."""
         # the loop and the athlete starting to speak both refresh it; one at a time
         async with self._status_lock:
-            ctx = self.chat_ctx.copy()
-            if self._status_id and ctx.get_by_id(self._status_id):
-                ctx.remove(self._status_id)
-            self._status_id = ctx.add_message(role="system", content=text).id
-            await self.update_chat_ctx(ctx)
+            self._status = text
+            await self._send_instructions()
 
     @function_tool()
     async def get_metrics(self, context: RunContext) -> str:

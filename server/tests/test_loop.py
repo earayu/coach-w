@@ -152,3 +152,20 @@ def test_coach_agent_tools():
     assert json.loads(asyncio.run(agent.get_progress(None)))["available"] is True
     assert json.loads(asyncio.run(agent.set_quiet(None, 99)))["minutes"] == 30
     assert json.loads(asyncio.run(agent.end_workout_summary(None)))["available"] is True
+
+
+def test_status_rides_at_the_end_of_the_instructions():
+    # COCH-18: Qwen ignored a mid-conversation system item; it follows the session instructions
+    h = Harness()
+    h.run.run(5, hr=144)
+    agent = CoachAgent(h.brain)
+    asyncio.run(agent.apply_profile())
+    asyncio.run(agent.inject_status("【运动状态】心率 144"))
+    asyncio.run(agent.inject_status("【运动状态】心率 150"))
+    assert agent.instructions.endswith("【运动状态】心率 150")
+    assert "心率 144" not in agent.instructions
+    assert h.brain.profile.prompt in agent.instructions
+    asyncio.run(agent.apply_profile())
+    assert agent.instructions.endswith("【运动状态】心率 150")
+    # a second profile load replaces the fragment instead of stacking it
+    assert agent.instructions.count(h.brain.profile.prompt) == 1
