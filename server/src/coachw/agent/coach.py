@@ -37,7 +37,7 @@ INSTRUCTIONS = """\
 - 数据不合常识时直说哪里不对，问用户怎么回事，不要照着念，更不要夸。【教练提示】里的"鼓励""夸奖"只是默认语气，和常识冲突时以常识为准。
 
 你一直看得到用户手表上的数据：
-- 这份说明最后的【运动状态】带着"手表此刻的实时数据"，用户每次开口时都会刷新成他开口那一刻的数据，比对话里任何旧数字都新。
+- 对话里以【运动状态】开头的消息带着"手表此刻的实时数据"，用户每次开口时都会刷新成他开口那一刻的数据，比对话里任何旧数字都新。
 - 用户问心率、配速、步频这类当前数据（语音识别常有同音错字，按上下文理解他想问什么），直接用【运动状态】里的实时数据回答，一句话说完。对用户直接说"你现在心率多少多少"，不要提"运动状态""系统""工具"这些内部说法。
 - 绝不说自己看不到数据、没在看、懒得查、"得看手表传过来的数据"之类的话。【运动状态】里写着没有实时数据时，直说手表现在没传来这项数据。
 
@@ -50,7 +50,7 @@ INSTRUCTIONS = """\
 
 系统消息：
 - 以【教练提示】开头的消息不是用户说的话，而是教练系统决定你现在要主动对用户说的内容：不要回答"好的"，直接用一句自然的口语对用户说出来，只用里面的数字。
-- 【运动状态】是手表数据和背景信息，不要主动念出来；用户问到时用它回答。
+- 以【运动状态】开头的消息不是用户说的话，是手表数据和背景信息：不要回复它，也不要主动念出来；用户问到时用它回答。
 
 工具：
 - 用户说"安静一会儿"、"别说话了"时调用 set_quiet，默认 5 分钟；说"可以说话了"时用 0 分钟取消。静音期间安全提醒照常。
@@ -148,37 +148,34 @@ class CoachAgent(Agent):
         self.brain = brain
         self._places = places
         self._base_tools = list(self.tools)
-        self._profile_prompt = ""
-        self._status = ""
+        self._status_id: str | None = None
         self._status_lock = asyncio.Lock()
-
-    async def _send_instructions(self) -> None:
-        parts = [self._base_instructions, self._profile_prompt, self._status]
-        await self.update_instructions("\n".join(p for p in parts if p))
 
     async def apply_profile(self) -> None:
         """Load the current profile's prompt fragment and tools into the live session."""
         profile = self.brain.profile
         if profile is None:
             return
-        async with self._status_lock:
-            self._profile_prompt = profile.prompt
-            await self._send_instructions()
+        # from the base each time: livekit keeps the live instructions in Agent._instructions
+        await self.update_instructions(self._base_instructions + "\n" + profile.prompt)
         await self.update_tools(
             self._base_tools + [profile_tool(self.brain, t) for t in profile.tools]
         )
         logger.info("profile loaded: %s", profile.name)
 
     async def inject_status(self, text: str) -> None:
-        """Replace the status summary at the end of the session instructions; asks no reply.
+        """Replace the previous status summary in the conversation without asking for a reply.
 
-        Not a conversation item: Qwen often ignored a mid-conversation system item and answered
-        with an older number or a made-up one, while it follows the session instructions
-        (measured 2026-11-23, spec 14.1)."""
+        A user-role item, so it sits right before the athlete's next turn: Qwen often ignored it
+        as a system item or at the end of the session instructions, and answered with its own
+        earlier number or a made-up one (production smoke 2026-11-23, spec 14.1)."""
         # the loop and the athlete starting to speak both refresh it; one at a time
         async with self._status_lock:
-            self._status = text
-            await self._send_instructions()
+            ctx = self.chat_ctx.copy()
+            if self._status_id and ctx.get_by_id(self._status_id):
+                ctx.remove(self._status_id)
+            self._status_id = ctx.add_message(role="user", content=text).id
+            await self.update_chat_ctx(ctx)
 
     @function_tool()
     async def get_metrics(self, context: RunContext) -> str:

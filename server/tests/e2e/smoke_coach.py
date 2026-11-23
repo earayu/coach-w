@@ -90,6 +90,7 @@ async def main(api_url: str, invite: str) -> int:
         while True:
             seq += 1
             elapsed = round(time.monotonic() - start, 1)
+            hr["elapsed_s"] = elapsed
             now = int(time.time() * 1000)
             frame = {
                 "v": 1,
@@ -174,8 +175,12 @@ async def main(api_url: str, invite: str) -> int:
     t_idle = time.monotonic()
     await asyncio.sleep(50)
 
+    # the elapsed time is in the status summary since COCH-18, so the coach may skip get_progress;
+    # what counts is that the minutes it says are right
+    minutes = int(hr["elapsed_s"] // 60)
     progress = await ask("我已经跑了多长时间了？")
-    checks["progress_tool_called"] = "get_progress" in progress["tools"]
+    said_minutes = rf"({minutes}|{'零一两三四五六'[minutes]}{'|二' if minutes == 2 else ''})\s*分"
+    checks["progress_answer_uses_elapsed"] = bool(re.search(said_minutes, progress["answer"]))
     quiet = await ask("请安静五分钟。")
     checks["set_quiet_called"] = "set_quiet" in quiet["tools"]
 
