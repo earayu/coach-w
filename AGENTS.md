@@ -149,3 +149,5 @@ HealthKit、镜像会话只能在真机上验证，模拟器构建通过不代�
 - 本机没有 `livekit-server` 时可用 `LIVEKIT_SERVER_BIN=<路径> ./scripts/dev.sh`；Xcode 下载 LiveKit 包超时时可把别的检出里的 `.build/DerivedData/SourcePackages` 用 `cp -cR` 克隆过来。
 - Qwen 会忽略会话中途的 system 消息：要让模型主动说的话用 `generate_reply(user_input=...)`（spec 4.2、14.1）。
 - 部署步骤见 `deploy/README.md`。
+- 对生产跑冒烟（`--api https://coach.apemind.ai`）要用生产 `.env` 里的邀请码，本机 `.env` 的码在生产上是 401；不要把码打印到日志或评论里。
+- 从别的检出 `cp -cR` 过来的 `SourcePackages` 里，`workspace-state.json` 记着原检出的绝对路径，模拟器构建会报找不到 XCFramework：把里面的路径改成当前检出即可。
