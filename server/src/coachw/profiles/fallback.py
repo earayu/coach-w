@@ -86,7 +86,7 @@ FALLBACK = ActivityProfile(
     ),
     default_targets=_defaults,
     start_hint="简短地打个招呼，说你会陪着他，有需要随时说。",
-    end_hint="用一句话总结并夸奖用户，提醒放松一下。",
+    end_hint="用一句话总结，提醒放松一下，再问用户这次感觉怎么样。",
     time_mark_s=TIME_MARK_S,
     time_mark_facts=_time_mark_facts,
 )

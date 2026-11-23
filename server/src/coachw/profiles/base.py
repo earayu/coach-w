@@ -100,7 +100,7 @@ class ActivityProfile:
     baseline_s: tuple[float, float] = (300.0, 900.0)
     start_hint: str = "简短地给用户打气，提醒先慢慢热身。"
     """What the coach does with the start milestone."""
-    end_hint: str = "用一句话总结并夸奖用户，提醒放松拉伸。"
+    end_hint: str = "用一句话总结，提醒放松拉伸，再问用户这次感觉怎么样。"
     """What the coach does with the end-of-workout summary."""
     speed_as_pace: bool = True
     """Speed is read as pace per km (on foot); False reads it as km/h (on wheels)."""

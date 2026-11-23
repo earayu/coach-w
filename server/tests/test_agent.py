@@ -26,6 +26,7 @@ from coachw.coach.brain import CoachBrain
 from coachw.coach.format import format_pace
 from coachw.coach.metrics_state import STALE_AFTER_S, MetricsState
 from coachw.profiles.base import Athlete
+from coachw.profiles.running import RUNNING
 from coachw.protocol import METRICS_TOPIC, MetricsFrame
 from coachw.session import SessionMeta
 
@@ -183,6 +184,14 @@ def test_farewell_only_blames_the_day_when_the_day_cut_the_session_short():
 def test_prompt_forbids_guessing_numbers():
     assert "get_metrics" in INSTRUCTIONS
     assert "禁止估计" in INSTRUCTIONS
+
+
+def test_prompt_covers_the_feedback_from_the_coch_19_run():
+    # asked "which model are you" three times, the coach gave the same sentence three times
+    assert "不要复读" in INSTRUCTIONS and "绝不一字不差" in INSTRUCTIONS
+    # asked to talk about how the run felt, it read every metric out instead
+    assert "运动后复盘" in INSTRUCTIONS and "不要把数据一项项念一遍" in INSTRUCTIONS
+    assert "专业" in INSTRUCTIONS and "动态拉伸" in RUNNING.prompt
 
 
 def test_prompt_only_promises_to_note_feedback_while_transcripts_are_kept():

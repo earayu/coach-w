@@ -258,7 +258,7 @@ class CoachBrain:
             parts.append(f"手表此刻的实时数据：{readings}")
         else:
             parts.append("手表此刻没有心率等实时数据")
-        return "【运动状态，仅供参考，不要回复】" + "；".join(parts) + "。"
+        return "【运动状态，仅供参考，不要回复，用户没问就不要念】" + "；".join(parts) + "。"
 
     def get_metrics(self) -> dict[str, Any]:
         out = self.state.snapshot()

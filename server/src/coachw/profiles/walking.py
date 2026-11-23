@@ -76,7 +76,7 @@ def _on_foot(name: str, label: str, activity: str, prompt: str, topics: tuple[st
         companion_topics=topics,
         default_targets=_defaults,
         start_hint="轻松地打个招呼，说你会一路陪着聊天，想安静随时说。",
-        end_hint="用一句话轻松地总结，夸夸用户，提醒喝点水。",
+        end_hint="用一句话轻松地总结，提醒喝点水，再问用户这次走下来感觉怎么样。",
     )
 
 

@@ -136,6 +136,6 @@ CYCLING = ActivityProfile(
     ),
     default_targets=_defaults,
     start_hint="一句话打气，提醒先轻松骑、注意路况。",
-    end_hint="用一句话总结并夸奖用户，提醒补水、拉伸。",
+    end_hint="用一句话总结，提醒补水、拉伸，再问用户这次骑下来感觉怎么样。",
     speed_as_pace=False,
 )

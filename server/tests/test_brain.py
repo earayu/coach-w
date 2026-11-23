@@ -218,6 +218,8 @@ def test_status_summary_carries_the_live_readings():
     s.run.run(700, speed=1000 / 330, hr=163)
     text = s.brain.status_summary()
     assert text.startswith("【运动状态")
+    # COCH-19: as a user item right before the athlete's turn it was read out unasked
+    assert "用户没问就不要念" in text
     assert "主训练" in text
     assert "手表此刻的实时数据：心率 163，配速 每公里 5 分 30 秒" in text
     s.run.run(30, hr=171)
