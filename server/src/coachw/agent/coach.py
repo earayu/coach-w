@@ -187,8 +187,9 @@ class CoachAgent(Agent):
             ctx = self.chat_ctx.copy()
             if self._status_id and ctx.get_by_id(self._status_id):
                 ctx.remove(self._status_id)
-            self._status_id = ctx.add_message(role="user", content=text).id
+            status_id = ctx.add_message(role="user", content=text).id
             await self.update_chat_ctx(ctx)
+            self._status_id = status_id
 
     @function_tool()
     async def get_metrics(self, context: RunContext) -> str:

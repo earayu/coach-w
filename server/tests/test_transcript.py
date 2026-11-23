@@ -83,4 +83,22 @@ def test_recent_conversation_is_this_athletes_last_words(tmp_path):
     assert recent_conversation(tmp_path, "a-1", now, max_age_s=30 * 60, limit=1) == [
         ("user", "你在吗")
     ]
+    assert recent_conversation(tmp_path, "a-1", now, max_age_s=30 * 60, limit=0) == []
     assert recent_conversation(tmp_path / "none", "a-1", now, max_age_s=60, limit=5) == []
+
+
+def test_recent_conversation_spans_multiple_days_and_skips_corrupt_lines(tmp_path):
+    now = datetime(2026, 11, 23, 8, 0, tzinfo=UTC)
+    day1 = datetime(2026, 11, 21, 9, 0, tzinfo=UTC)
+    day2 = datetime(2026, 11, 22, 9, 0, tzinfo=UTC)
+    t1 = Transcript(tmp_path, room="r1", athlete_id="a-1", clock=lambda: day1)
+    t1.add("user", "第一天")
+    t2 = Transcript(tmp_path, room="r2", athlete_id="a-1", clock=lambda: day2)
+    t2.add("user", "第二天")
+    # simulate a truncated write after a crash
+    with t2.path.open("a", encoding="utf-8") as f:
+        f.write('{"ts": "2026-11-22T09:00:01+00:00", "type": "coach"\n')
+    t2.add("coach", "恢复后")
+
+    lines = recent_conversation(tmp_path, "a-1", now, max_age_s=3 * 24 * 3600, limit=10)
+    assert lines == [("user", "第一天"), ("user", "第二天"), ("coach", "恢复后")]

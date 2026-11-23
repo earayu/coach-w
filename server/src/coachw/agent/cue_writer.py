@@ -43,6 +43,8 @@ _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
 def conversation_of(items: Iterable[Any], limit: int = HISTORY_LINES) -> list[tuple[str, str]]:
     """The last things the athlete and the coach said in a chat context, without system prompts."""
+    if limit <= 0:
+        return []
     said: list[tuple[str, str]] = []
     for item in items:
         if getattr(item, "type", None) != "message":
@@ -63,10 +65,16 @@ class CueWriter:
         brain: CoachBrain,
         write: Write,
         history: Callable[[], Sequence[tuple[str, str]]] = lambda: (),
+        close: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.brain = brain
         self._write = write
         self._history = history
+        self._close = close
+
+    async def aclose(self) -> None:
+        if self._close is not None:
+            await self._close()
 
     def prompt(self, delivery: Delivery) -> str:
         cue = delivery.cue
@@ -93,4 +101,7 @@ class CueWriter:
         if invented := numbers_in(text) - numbers_in(prompt):
             logger.info("writer added %d numbers of its own; using the plain cue", len(invented))
             return delivery.instructions
-        return SAY.format(text=text.strip().strip('"“”「」'))
+        cleaned = text.strip().strip('"“”「」').strip()
+        if not cleaned:
+            return delivery.instructions
+        return SAY.format(text=cleaned)

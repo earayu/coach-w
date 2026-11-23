@@ -230,3 +230,32 @@ def test_the_phone_picks_a_cue_writer_the_server_offers(client: TestClient):
     assert writer("qwen3.8-flash") == "qwen3.8-flash"
     assert writer("gpt-9") == ""  # not offered: the realtime model speaks alone
     assert SessionMeta.from_json(verify(start(client).json()["token"]).metadata).cue_writer == ""
+
+
+def test_reused_room_clamps_max_session_when_quota_already_spent(client: TestClient, clock: Clock):
+    first = start(client, code=BOB).json()
+    webhook(client, "participant_joined", first["room"], ATHLETE)
+    clock.now += 90  # Bob has 60 s/day; room stayed open past it
+    rejoined = start(client, code=BOB).json()
+    assert rejoined["room"] == first["room"]
+    assert rejoined["max_session_s"] == 0
+
+
+def test_dead_room_is_removed_after_coach_check_fails(clock: Clock):
+    checks: list[str] = []
+
+    async def no_coach(room: str) -> bool:
+        checks.append(room)
+        return False
+
+    c = TestClient(create_app(ApiSettings.from_env(ENV), clock=clock, has_coach=no_coach))
+    first = start(c, code=BOB).json()
+    webhook(c, "participant_joined", first["room"], ATHLETE)
+    clock.now += 70  # Bob's 60 s daily quota is now spent
+    webhook(c, "participant_left", first["room"], ATHLETE)
+    # coach left and quota is gone -> 429, and the dead room mapping is dropped
+    assert start(c, code=BOB).status_code == 429
+    assert checks == [first["room"]]
+    # subsequent request must not probe the already-dead room again
+    assert start(c, code=BOB).status_code == 429
+    assert checks == [first["room"]]

@@ -37,6 +37,9 @@ class TextWriter:
             logger.warning("writer %s failed: %s", self.model, type(e).__name__)
             return None
 
+    async def aclose(self) -> None:
+        await self._llm._client.close()
+
     async def _collect(self, ctx: llm.ChatContext) -> str:
         parts: list[str] = []
         async with self._llm.chat(

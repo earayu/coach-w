@@ -109,17 +109,30 @@ def recent_conversation(
     A coach that starts after the link dropped for good (a new room) continues the conversation
     from here instead of greeting a stranger (COCH-15).
     """
+    if limit <= 0:
+        return []
     since = now - timedelta(seconds=max_age_s)
-    days = {since.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")}
+    day_count = (now.date() - since.date()).days + 1
+    days = [
+        (since.date() + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(max(1, day_count))
+    ]
     lines: list[tuple[datetime, str, str]] = []
     for day in days:
         for path in sorted((directory / day).glob("*.jsonl")):
             try:
-                records = [json.loads(raw) for raw in path.read_text(encoding="utf-8").splitlines()]
-            except (OSError, ValueError):
+                raw_lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
                 continue
             mine = False
-            for record in records:
+            for raw in raw_lines:
+                if not raw.strip():
+                    continue
+                try:
+                    record = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
                 if record.get("type") == "session":
                     mine = record.get("athlete_id") == athlete_id
                     continue

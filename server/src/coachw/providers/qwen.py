@@ -73,10 +73,12 @@ class _RealtimeSession(aliyun.realtime.RealtimeSession):
         pending = pending_user_audio(self._chat_ctx, chat_ctx)
         for item in pending:
             self._chat_ctx.items.remove(item)
-        await super().update_chat_ctx(chat_ctx)
-        for item in pending:
-            if self._chat_ctx.get_by_id(item.id) is None:
-                self._chat_ctx.insert(item)
+        try:
+            await super().update_chat_ctx(chat_ctx)
+        finally:
+            for item in pending:
+                if self._chat_ctx.get_by_id(item.id) is None:
+                    self._chat_ctx.insert(item)
 
 
 class _RealtimeModel(aliyun.realtime.RealtimeModel):

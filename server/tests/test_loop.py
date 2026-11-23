@@ -2,6 +2,7 @@ import asyncio
 import json
 import uuid
 
+import pytest
 from synth import T0_MS, Clock, Runner
 
 from coachw.agent.coach import CoachAgent, profile_tool
@@ -167,3 +168,70 @@ def test_status_replaces_the_last_one_and_profiles_do_not_stack():
     # COCH-18: a second profile load (run -> walk) used to append to the first one
     asyncio.run(agent.apply_profile())
     assert agent.instructions.count(h.brain.profile.prompt) == 1
+
+
+def test_speaking_right_after_start_still_refreshes_status():
+    h = Harness()
+    h.run.run(1, hr=148)  # elapsed 1 s < SPEAKING_REFRESH_S (2 s)
+    asyncio.run(h.loop.athlete_started_speaking())
+    assert len(h.agent.statuses) == 1 and "心率 148" in h.agent.statuses[-1]
+
+
+def test_failed_status_or_profile_update_retries():
+    h = Harness()
+    h.run.run(1, hr=145)
+    calls = 0
+
+    async def flaky_status(text: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient")
+        h.agent.statuses.append(text)
+
+    h.agent.inject_status = flaky_status
+    asyncio.run(h.loop.athlete_started_speaking())
+    assert h.agent.statuses == []
+    # failed refresh must not trigger the speaking cooldown
+    asyncio.run(h.loop.athlete_started_speaking())
+    assert len(h.agent.statuses) == 1
+
+    # failed apply_profile must retry on the next tick
+    h.brain.profile_version += 1
+    profile_calls = 0
+
+    async def flaky_profile() -> None:
+        nonlocal profile_calls
+        profile_calls += 1
+        if profile_calls == 1:
+            raise RuntimeError("transient")
+        h.agent.profiles += 1
+
+    h.agent.apply_profile = flaky_profile
+    with pytest.raises(RuntimeError, match="transient"):
+        asyncio.run(h.loop.step())
+    asyncio.run(h.loop.step())
+    assert profile_calls == 2
+
+
+def test_failed_inject_status_keeps_previous_status_id():
+    h = Harness()
+    h.run.run(5, hr=144)
+    agent = CoachAgent(h.brain)
+    asyncio.run(agent.inject_status("【运动状态】心率 144"))
+    original_update = agent.update_chat_ctx
+    fail_once = True
+
+    async def flaky_update(ctx):
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise RuntimeError("sync failed")
+        await original_update(ctx)
+
+    agent.update_chat_ctx = flaky_update
+    with pytest.raises(RuntimeError, match="sync failed"):
+        asyncio.run(agent.inject_status("【运动状态】心率 150"))
+    asyncio.run(agent.inject_status("【运动状态】心率 155"))
+    said = [item.text_content for item in agent.chat_ctx.items if item.type == "message"]
+    assert said == ["【运动状态】心率 155"]

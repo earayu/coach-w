@@ -67,6 +67,7 @@ class CoachLoop:
         self.clock = clock
         self._profile_version = 0
         self._summary_at = clock()
+        self._summary_injected_at: float | None = None
 
     async def run(self) -> None:
         while True:
@@ -79,8 +80,9 @@ class CoachLoop:
 
     async def step(self) -> None:
         if self.brain.profile_version != self._profile_version:
-            self._profile_version = self.brain.profile_version
+            version = self.brain.profile_version
             await self.agent.apply_profile()
+            self._profile_version = version
 
         user_speaking = self.session.user_state == "speaking"
         agent_busy = self.session.agent_state in BUSY_AGENT_STATES
@@ -100,7 +102,10 @@ class CoachLoop:
         """Put the watch's readings of this moment in front of the model before the athlete's
         turn ends: Qwen answers on its own at the end of the turn, often without calling
         get_metrics, and then had only old numbers or none (COCH-18)."""
-        if self.clock() - self._summary_at < SPEAKING_REFRESH_S:
+        if (
+            self._summary_injected_at is not None
+            and self.clock() - self._summary_injected_at < SPEAKING_REFRESH_S
+        ):
             return
         try:
             await self.refresh_status()
@@ -115,9 +120,17 @@ class CoachLoop:
             logger.warning("status refresh failed: %s", type(e).__name__)
 
     async def refresh_status(self) -> None:
-        self._summary_at = self.clock()
-        if text := self.brain.status_summary():
+        if not (text := self.brain.status_summary()):
+            return
+        now = self.clock()
+        prev_at, prev_injected = self._summary_at, self._summary_injected_at
+        self._summary_at = now
+        self._summary_injected_at = now
+        try:
             await self.agent.inject_status(text)
+        except Exception:
+            self._summary_at, self._summary_injected_at = prev_at, prev_injected
+            raise
 
     async def deliver(self, delivery: Delivery) -> None:
         cue = delivery.cue

@@ -83,6 +83,21 @@ def test_conversation_skips_cues_and_status():
         SimpleNamespace(type="message", role="user", text_content="【运动状态】跑步"),
     ]
     assert conversation_of(items) == [("user", "我累了"), ("coach", "慢一点")]
+    assert conversation_of(items, limit=0) == []
+
+
+def test_quote_only_writer_output_falls_back_and_aclose_runs_hook():
+    closed = []
+
+    async def close():
+        closed.append(True)
+
+    brain = CoachBrain(Athlete(str(uuid.uuid4())))
+    w = CueWriter(brain, Pen('""'), close=close)
+    d = delivery()
+    assert asyncio.run(w.instructions_for(d)) == d.instructions
+    asyncio.run(w.aclose())
+    assert closed == [True]
 
 
 def test_the_loop_says_what_the_writer_wrote():

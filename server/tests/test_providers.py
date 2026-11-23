@@ -1,8 +1,13 @@
+import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
 from livekit.agents import llm
+from livekit.plugins import aliyun
 
 from coachw.providers import get_realtime_model
-from coachw.providers.qwen import QwenSettings, pending_user_audio
+from coachw.providers.qwen import QwenSettings, _RealtimeSession, pending_user_audio
+from coachw.providers.writer import TextWriter
 
 
 def msg(id: str, role: str, *text: str) -> llm.ChatMessage:
@@ -63,3 +68,25 @@ def test_qwen_turn_silence_is_configurable_within_qwens_range():
     assert s.silence_ms == 900
     with pytest.raises(ValueError, match="QWEN_VAD_SILENCE_MS"):
         QwenSettings.from_env({"DASHSCOPE_API_KEY": "k", "QWEN_VAD_SILENCE_MS": "100"})
+
+
+def test_pending_audio_is_restored_when_update_chat_ctx_fails(monkeypatch):
+    session = object.__new__(_RealtimeSession)
+    pending = msg("u1", "user")
+    session._chat_ctx = llm.ChatContext([msg("a1", "assistant", "hi"), pending])
+
+    async def boom(self, chat_ctx):
+        raise RuntimeError("ws closed")
+
+    monkeypatch.setattr(aliyun.realtime.RealtimeSession, "update_chat_ctx", boom)
+    with pytest.raises(RuntimeError, match="ws closed"):
+        asyncio.run(session.update_chat_ctx(llm.ChatContext([msg("a1", "assistant", "hi")])))
+    assert session._chat_ctx.get_by_id("u1") is not None
+
+
+def test_text_writer_aclose_closes_underlying_http_client():
+    writer = TextWriter("qwen3.8-flash", {"DASHSCOPE_API_KEY": "k"})
+    close = AsyncMock()
+    writer._llm._client.close = close
+    asyncio.run(writer.aclose())
+    close.assert_awaited_once()

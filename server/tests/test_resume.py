@@ -129,3 +129,14 @@ def test_greeting_waits_for_resume_then_falls_back(monkeypatch):
     assert asyncio.run(greeting_for(s.brain, inbox)) == GREETING
     inbox.on_data(packet(RESUME, RESUME_TOPIC))
     assert asyncio.run(greeting_for(s.brain, inbox)).startswith("【教练提示】")
+
+
+def test_starting_a_new_workout_clears_previous_resume_state():
+    s = resumed_session()
+    assert s.brain.resumed is not None
+    # workout time rewinds -> new workout begins in the same voice session
+    s.run.elapsed = 0
+    s.run.distance = 0
+    s.run.run(3)
+    assert s.brain.resumed is None
+    assert s.brain.resume_greeting() is None

@@ -92,15 +92,20 @@ def create_app(
             logger.info("rejected: unknown invite code athlete_id=%s", athlete_id)
             raise HTTPException(401, "unknown invite code")
 
-        now = clock()
         key = (invite.code, athlete_id)
+        candidate = rooms.get(key)
+        # Check LiveKit before touching the ledger so everything below runs without yielding
+        # to another request or webhook on the event loop.
+        coach_present = candidate is not None and await has_coach(candidate)
+
+        now = clock()
+        if candidate is not None and not coach_present and rooms.get(key) == candidate:
+            del rooms[key]
         ledger.supersede(invite.code, athlete_id)
         remaining = invite.daily_minutes * 60 - ledger.used_s(invite.code, now)
-        room = rooms.get(key)
-        reused = (
-            room is not None
-            and await has_coach(room)
-            and ledger.reuse(room, invite.code, athlete_id, now, settings.token_ttl_s)
+        room = candidate if coach_present and rooms.get(key) == candidate else None
+        reused = room is not None and ledger.reuse(
+            room, invite.code, athlete_id, now, settings.token_ttl_s
         )
         if not reused and remaining < settings.min_session_s:
             logger.info("rejected: daily minutes used up athlete_id=%s", athlete_id)
@@ -111,7 +116,8 @@ def create_app(
         if writer and writer not in settings.writer_models:
             logger.info("unknown cue writer ignored athlete_id=%s", athlete_id)
             writer = ""
-        meta = SessionMeta(athlete_id, int(min(remaining, settings.session_max_s)), writer)
+        max_session_s = max(0, int(min(remaining, settings.session_max_s)))
+        meta = SessionMeta(athlete_id, max_session_s, writer)
         issued = issue_token(
             api_key=settings.livekit_api_key,
             api_secret=settings.livekit_api_secret,

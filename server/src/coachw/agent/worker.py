@@ -199,7 +199,9 @@ def cue_writer_for(meta: SessionMeta, brain: CoachBrain, agent: CoachAgent) -> C
         return None
     logger.info("cues written by %s", meta.cue_writer)
     text = TextWriter(meta.cue_writer, os.environ)
-    return CueWriter(brain, text.write, lambda: conversation_of(agent.chat_ctx.items))
+    return CueWriter(
+        brain, text.write, lambda: conversation_of(agent.chat_ctx.items), close=text.aclose
+    )
 
 
 # The phone looks the place up with Apple Maps; that takes a few seconds on mobile data.
@@ -297,6 +299,9 @@ async def entrypoint(ctx: JobContext) -> None:
     coach = asyncio.create_task(loop.run())
     ctx.add_shutdown_callback(lambda: _cancel(coach))
     refreshes: set[asyncio.Task] = set()
+    ctx.add_shutdown_callback(lambda: _cancel(*refreshes))
+    if writer is not None:
+        ctx.add_shutdown_callback(writer.aclose)
 
     def on_user_state(ev: Any) -> None:
         if ev.new_state != "speaking":

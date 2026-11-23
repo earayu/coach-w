@@ -110,12 +110,14 @@ class CoachBrain:
             self._load(self._profiles(frame.activity))
         return self.state.update(frame)
 
-    @staticmethod
-    def _starts_new_workout(latest: MetricsFrame | None, frame: MetricsFrame) -> bool:
+    def _starts_new_workout(self, latest: MetricsFrame | None, frame: MetricsFrame) -> bool:
         """The voice session outlives a workout: the next one must not inherit its state (its
         samples were ignored until their time passed the old workout's, and start never fired)."""
         if latest is None:
-            return False
+            return (
+                self.resumed is not None
+                and frame.elapsed_s + NEW_WORKOUT_REWIND_S < self.resumed.elapsed_s
+            )
         if latest.state is WorkoutState.ENDED:
             return frame.state is not WorkoutState.ENDED
         # the end frame was lost: workout time only runs backwards when a new workout began
@@ -135,6 +137,7 @@ class CoachBrain:
         self.queue = CueQueue(max_per_minute=c.max_per_minute, min_gap_s=c.min_gap_s)
         self.queue.quiet_until = quiet_until
         self.alerts = {}
+        self.resumed = None
         self.profile_version += 1
 
     def resume(self, resume: CoachResume) -> bool:
