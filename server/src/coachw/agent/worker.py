@@ -293,8 +293,19 @@ async def entrypoint(ctx: JobContext) -> None:
         greeting = RECONNECT_GREETING
     session.generate_reply(instructions=greeting)
     writer = cue_writer_for(meta, brain, agent)
-    coach = asyncio.create_task(CoachLoop(brain, agent, session, publish_cue, writer=writer).run())
+    loop = CoachLoop(brain, agent, session, publish_cue, writer=writer)
+    coach = asyncio.create_task(loop.run())
     ctx.add_shutdown_callback(lambda: _cancel(coach))
+    refreshes: set[asyncio.Task] = set()
+
+    def on_user_state(ev: Any) -> None:
+        if ev.new_state != "speaking":
+            return
+        task = asyncio.create_task(loop.athlete_started_speaking())
+        refreshes.add(task)
+        task.add_done_callback(refreshes.discard)
+
+    session.on("user_state_changed", on_user_state)
 
 
 async def _cancel(*tasks: asyncio.Task) -> None:

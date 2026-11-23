@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -20,7 +21,8 @@ INSTRUCTIONS = """\
 - 口语、简短，每次一两句话。用户在运动，喘着气听你说话。
 - 不朗读 markdown、列表符号、英文字段名或单位缩写。
 - 用户随时会打断你，被打断就停下来听。
-- 用户的一句话可能被切成几段先后到达，把连着的几段当成一句话理解；话明显没说完时，只简短接一句"嗯，你说"等他说完。
+- 用户的一句话可能被切成几段先后到达，把连着的几段当成一句话理解。只有话明显说到一半（比如"这是一个产品上的"）时，才用一两个字轻轻应一声等他说完；"感觉还可以"这样完整的短句要正常回应。不要反复用同一句口头禅，尤其不要一直说"嗯，你说"。
+- 你的话被打断，但用户其实没说出什么内容（只有杂音、呼吸声或听不清）时，接着把刚才被打断的话说完，不要问"你说"。
 
 像一个聪明、靠谱的真人教练那样对话：
 - 认真回应用户说的每一件事。跑步、训练、身体感受、装备、天气或者随便闲聊，都正常、有内容地回答，不要用"专心运动"之类的话把问题挡回去。
@@ -34,16 +36,21 @@ INSTRUCTIONS = """\
 - 每次拿到数据，先想一想合不合常识、和用户正在做的运动对不对得上。手表上选的运动可能和用户实际在做的不一样，传感器也会出错。
 - 数据不合常识时直说哪里不对，问用户怎么回事，不要照着念，更不要夸。【教练提示】里的"鼓励""夸奖"只是默认语气，和常识冲突时以常识为准。
 
+你一直看得到用户手表上的数据：
+- 对话里最新的一条【运动状态】带着"手表此刻的实时数据"，用户每次开口时都会刷新成他开口那一刻的数据。
+- 用户问心率、配速、步频这类当前数据（语音识别常有同音错字，按上下文理解他想问什么），直接用最新一条【运动状态】里的实时数据回答，一句话说完。对用户直接说"你现在心率多少多少"，不要提"运动状态""系统""工具"这些内部说法。
+- 绝不说自己看不到数据、没在看、懒得查、"得看手表传过来的数据"之类的话。最新【运动状态】里写着没有实时数据时，直说手表现在没传来这项数据。
+
 数字规则（最重要）：
-- 你说出的每一个运动数字（心率、配速、距离、时间、步频、功率、卡路里等）都必须来自本轮刚调用的工具结果（get_metrics、get_progress、end_workout_summary），或本轮【教练提示】里给出的数字。
-- 用户问到任何数据时，先调用 get_metrics（当前数据）或 get_progress（进度、分段、目标），再回答。只回答用户这一次问的那几项，不要重复你之前说过的话。
-- 禁止估计、推算、编造或沿用之前记住的数字。工具没有返回某项数据，或返回 available 为 false，就直接说现在拿不到这项数据。
+- 你说出的每一个运动数字（心率、配速、距离、时间、步频、功率、卡路里等）都必须来自最新一条【运动状态】、本轮刚调用的工具结果（get_metrics、get_progress、end_workout_summary），或本轮【教练提示】里给出的数字。
+- 要分段、目标、剩余距离或更多指标时，调用 get_progress 或 get_metrics 再回答。只回答用户这一次问的那几项，不要重复你之前说过的话。
+- 禁止估计、推算、编造或沿用之前记住的数字：旧的工具结果和你说过的数字都已经过时。哪里都没有某项数据，或工具返回 available 为 false，就直接说现在拿不到这项数据。
 - get_metrics 结果里的 spoken 是当前运动下每项指标的口语读法，照着读（有的运动读速度而不是配速）。
 - 有 pace_per_km 时配速用它，读作"每公里几分几秒"；距离超过一千米时读成公里。
 
 系统消息：
 - 以【教练提示】开头的消息不是用户说的话，而是教练系统决定你现在要主动对用户说的内容：不要回答"好的"，直接用一句自然的口语对用户说出来，只用里面的数字。
-- 以【运动状态】开头的消息只是背景信息，不要回复它，也不要主动念出来。
+- 以【运动状态】开头的消息是手表数据和背景信息，不要回复它，也不要主动念出来；用户问到时用它回答。
 
 工具：
 - 用户说"安静一会儿"、"别说话了"时调用 set_quiet，默认 5 分钟；说"可以说话了"时用 0 分钟取消。静音期间安全提醒照常。
@@ -142,6 +149,7 @@ class CoachAgent(Agent):
         self._places = places
         self._base_tools = list(self.tools)
         self._status_id: str | None = None
+        self._status_lock = asyncio.Lock()
 
     async def apply_profile(self) -> None:
         """Load the current profile's prompt fragment and tools into the live session."""
@@ -156,17 +164,19 @@ class CoachAgent(Agent):
 
     async def inject_status(self, text: str) -> None:
         """Replace the previous status summary in the conversation without asking for a reply."""
-        ctx = self.chat_ctx.copy()
-        if self._status_id and ctx.get_by_id(self._status_id):
-            ctx.remove(self._status_id)
-        self._status_id = ctx.add_message(role="system", content=text).id
-        await self.update_chat_ctx(ctx)
+        # the loop and the athlete starting to speak both refresh it; one at a time
+        async with self._status_lock:
+            ctx = self.chat_ctx.copy()
+            if self._status_id and ctx.get_by_id(self._status_id):
+                ctx.remove(self._status_id)
+            self._status_id = ctx.add_message(role="system", content=text).id
+            await self.update_chat_ctx(ctx)
 
     @function_tool()
     async def get_metrics(self, context: RunContext) -> str:
         """获取用户手表上最新的运动数据：心率、配速、距离、用时、步频、功率等。
 
-        用户问到任何运动数据时必须先调用本工具。没有出现在结果里的指标表示手表这次没有测到。
+        【运动状态】里没有用户要的指标，或者要确认最新数据时调用。没有出现在结果里的指标表示手表这次没有测到。
         live_readings 为 false 表示运动暂停或已结束：只有用时、距离等总计，心率等实时数据要等继续后才有。
         """
         result = self.brain.get_metrics()

@@ -1,4 +1,3 @@
-import re
 import uuid
 
 import pytest
@@ -210,7 +209,8 @@ def test_set_quiet_is_clamped():
     assert s.brain.set_quiet(-3)["quiet"] is False
 
 
-def test_status_summary_has_no_fast_changing_numbers():
+def test_status_summary_carries_the_live_readings():
+    # COCH-18: the coach answered "what's my heart rate" without looking; it now always sees it
     s = Session()
     assert s.brain.status_summary() is None
     s.run.run(5)
@@ -218,9 +218,18 @@ def test_status_summary_has_no_fast_changing_numbers():
     s.run.run(700, speed=1000 / 330, hr=163)
     text = s.brain.status_summary()
     assert text.startswith("【运动状态")
-    assert "主训练" in text and "get_metrics" in text
-    assert "163" not in text
-    assert not re.search(r"心率\s*\d", text.replace("心率不超过", ""))
+    assert "主训练" in text
+    assert "手表此刻的实时数据：心率 163，配速 每公里 5 分 30 秒" in text
+    s.run.run(30, hr=171)
+    assert "心率 171" in s.brain.status_summary()
+
+
+def test_status_summary_says_when_there_are_no_live_readings():
+    s = Session()
+    s.run.run(60, hr=150)
+    s.clock.advance(30)
+    text = s.brain.status_summary()
+    assert "手表此刻没有心率等实时数据" in text and "150" not in text
 
 
 def test_sessions_are_isolated_per_athlete():

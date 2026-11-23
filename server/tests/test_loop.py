@@ -107,6 +107,19 @@ def test_status_summary_is_injected_periodically_when_idle():
     assert len(h.agent.statuses) == 2
 
 
+def test_status_is_refreshed_when_the_athlete_starts_speaking():
+    h = Harness()
+    h.run.run(20, hr=140)
+    asyncio.run(h.loop.athlete_started_speaking())
+    assert len(h.agent.statuses) == 1 and "心率 140" in h.agent.statuses[-1]
+    # fragments of one sentence do not each rewrite it
+    asyncio.run(h.loop.athlete_started_speaking())
+    assert len(h.agent.statuses) == 1
+    h.run.run(5, hr=152)
+    asyncio.run(h.loop.athlete_started_speaking())
+    assert len(h.agent.statuses) == 2 and "心率 152" in h.agent.statuses[-1]
+
+
 def test_publish_failure_does_not_break_the_loop():
     h = Harness()
 

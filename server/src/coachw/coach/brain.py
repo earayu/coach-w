@@ -232,8 +232,9 @@ class CoachBrain:
         return phase.label if phase else "准备"
 
     def status_summary(self) -> str | None:
-        """Context for the model, injected without a reply. Deliberately free of fast-changing
-        numbers (heart rate, pace): the model must call get_metrics for those (spec 4.2, 14.2)."""
+        """Context for the model, injected without a reply. It carries the watch's live readings
+        as they are now; the loop replaces it the moment the athlete starts speaking, so a
+        question is answered from what the watch shows at that moment (spec 4.2, COCH-18)."""
         if self.profile is None or self.state.latest is None:
             return None
         parts = [f"运动：{self.profile.label}", f"阶段：{self.phase_label()}"]
@@ -251,11 +252,13 @@ class CoachBrain:
         now = self._clock()
         if self.queue.is_quiet(now):
             parts.append(f"用户要求安静，还剩约 {say_duration(self.queue.quiet_remaining_s(now))}")
-        return (
-            "【运动状态，仅供参考，不要回复】"
-            + "；".join(parts)
-            + "。用户问到具体数据时仍然必须先调用 get_metrics 或 get_progress。"
-        )
+        metrics = self.get_metrics()
+        if metrics["available"] and metrics.get("live_readings", True) and metrics.get("spoken"):
+            readings = "，".join(f"{label} {text}" for label, text in metrics["spoken"].items())
+            parts.append(f"手表此刻的实时数据：{readings}")
+        else:
+            parts.append("手表此刻没有心率等实时数据")
+        return "【运动状态，仅供参考，不要回复】" + "；".join(parts) + "。"
 
     def get_metrics(self) -> dict[str, Any]:
         out = self.state.snapshot()

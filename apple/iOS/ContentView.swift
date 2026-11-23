@@ -115,7 +115,10 @@ struct ContentView: View {
                 onEnd: { mirror.end() },
                 onConnectVoice: { Task { await voice.start(settings: settings) } },
                 onToggleMute: { Task { await voice.toggleMute() } },
-                onStopVoice: { Task { await voice.stop() } },
+                onStopVoice: {
+                    diag("phone-ui", "disconnect voice tapped on the dashboard")
+                    Task { await voice.stop() }
+                },
                 onOpenSettings: { showSettings = true }
             )
         } else {
@@ -131,7 +134,10 @@ struct ContentView: View {
                 onCancelStart: { mirror.cancelStart() },
                 onConnectVoice: { Task { await voice.start(settings: settings) } },
                 onToggleMute: { Task { await voice.toggleMute() } },
-                onStopVoice: { Task { await voice.stop() } },
+                onStopVoice: {
+                    diag("phone-ui", "disconnect voice tapped in the lobby")
+                    Task { await voice.stop() }
+                },
                 onOpenSettings: { showSettings = true }
             )
         }

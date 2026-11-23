@@ -2,7 +2,9 @@
 
 Gets a token from the token API, joins the room as the athlete, streams synthetic metrics frames
 on `coach.metrics`, asks questions with macOS `say`, and checks that the coach's answers use the
-numbers from the frames and that the agent called `get_metrics`.
+numbers from the frames. The heart rate changes between questions, so an answer from an old
+tool result or an old status summary fails; whether `get_metrics` was called is recorded only:
+the coach may answer from the live readings in its status summary (COCH-18).
 
 Usage (from server/):
   uv run python tests/e2e/smoke_voice.py --invite <code> [--api http://127.0.0.1:8000]
@@ -43,6 +45,8 @@ SILENCE = 300
 
 # distinctive values so a guessed number cannot pass by luck
 HR_BPM = 137
+HR_LATER = 152  # from the second question on
+live = {"hr_bpm": HR_BPM}
 SPEED_MPS = 1000 / 332  # 5'32" per km
 
 
@@ -84,7 +88,7 @@ def frame_json(seq: int, elapsed: float) -> bytes:
             "activity": "running",
             "state": "running",
             "elapsed_s": elapsed,
-            "hr_bpm": HR_BPM,
+            "hr_bpm": live["hr_bpm"],
             "distance_m": round(2400 + SPEED_MPS * elapsed, 1),
             "speed_mps": round(SPEED_MPS, 3),
             "cadence_spm": 171,
@@ -222,11 +226,17 @@ async def main(api_url: str, invite: str, log_cmd: str | None) -> int:
     await until_quiet(30)
 
     hr = await ask("我现在心率多少？")
-    checks["hr_tool_called"] = "True" in hr["tool_calls"]
     checks["hr_answer_uses_frame"] = bool(re.search(r"137|一百三十七|一三七", hr["answer"]))
 
+    # COCH-18: asked this way the coach used to answer with an old number or say it was not looking
+    live["hr_bpm"] = HR_LATER
+    await asyncio.sleep(3)
+    hr_again = await ask("你不是能看到我的心率吗？")
+    checks["hr_again_uses_new_frame"] = bool(
+        re.search(r"152|一百五十二|一五二", hr_again["answer"])
+    )
+
     pace = await ask("我现在配速多少？")
-    checks["pace_tool_called"] = "True" in pace["tool_calls"]
     checks["pace_answer_uses_frame"] = bool(re.search(r"5\D{0,4}32|五分三十二", pace["answer"]))
 
     # power is absent from the frames: the coach should say it has no data (recorded, not asserted)
@@ -242,7 +252,7 @@ async def main(api_url: str, invite: str, log_cmd: str | None) -> int:
         "room": session["room"],
         "media_paths": paths,
         "checks": checks,
-        "turns": [hr, pace, power],
+        "turns": [hr, hr_again, pace, power],
         "transcripts": debug,
     }
     ARTIFACTS.mkdir(exist_ok=True)
