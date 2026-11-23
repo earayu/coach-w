@@ -1,7 +1,7 @@
 import Foundation
 
 /// When to try the voice coach again after the link dropped (docs/spec.md 7.4).
-public struct ReconnectPolicy: Sendable {
+public struct ReconnectPolicy: Sendable, Equatable {
     public enum Drop: Sendable, Equatable {
         /// Network trouble or a server hiccup: try again.
         case network

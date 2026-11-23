@@ -15,21 +15,30 @@ private let log = Logger(subsystem: "com.earayu.coachw", category: "offline-voic
 final class OfflineVoiceRecorder: NSObject {
     static let shared = OfflineVoiceRecorder()
 
-    private var recorder: AVAudioRecorder?
-    private var startedAt: Date?
+    private enum State {
+        case idle
+        case recording(recorder: AVAudioRecorder, startedAt: Date)
+    }
+
+    private var state: State = .idle
     private let directory = URL.applicationSupportDirectory.appending(path: "offline-voice", directoryHint: .isDirectory)
 
     /// Shorter recordings hold nothing worth transcribing.
     static let minDuration: TimeInterval = 1.5
 
-    var isRecording: Bool { recorder?.isRecording == true }
+    var isRecording: Bool {
+        if case .recording(let recorder, _) = state { return recorder.isRecording }
+        return false
+    }
 
     /// Starts keeping the microphone; the audio session is the one LiveKit set up (play and record).
     func start() {
-        guard recorder == nil else { return }
+        guard case .idle = state else { return }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let url = directory.appending(path: "\(Self.fileStamp.string(from: .now)).m4a")
+            let stamp = Self.fileStamp.string(from: .now)
+            let suffix = String(UUID().uuidString.prefix(8))
+            let url = directory.appending(path: "\(stamp)-\(suffix).m4a")
             let settings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: 16_000,
@@ -46,8 +55,7 @@ final class OfflineVoiceRecorder: NSObject {
                 diag("offline-voice", "recorder did not start")
                 return
             }
-            self.recorder = recorder
-            startedAt = .now
+            state = .recording(recorder: recorder, startedAt: .now)
             diag("offline-voice", "recording while the coach is unreachable")
         } catch {
             diag("offline-voice", "could not start recording: \(error.localizedDescription)")
@@ -56,13 +64,11 @@ final class OfflineVoiceRecorder: NSObject {
 
     /// Stops and transcribes. Returns the text said offline, or nil when there was nothing.
     func stopAndTranscribe() async -> String? {
-        guard let recorder else { return nil }
+        guard case .recording(let recorder, let began) = state else { return nil }
+        state = .idle
         let url = recorder.url
         let duration = recorder.currentTime
         recorder.stop()
-        self.recorder = nil
-        let began = startedAt ?? .now
-        startedAt = nil
         guard duration >= Self.minDuration else {
             try? FileManager.default.removeItem(at: url)
             return nil

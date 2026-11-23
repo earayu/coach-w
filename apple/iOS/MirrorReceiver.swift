@@ -6,6 +6,9 @@ import os
 private let log = Logger(subsystem: "com.earayu.coachw", category: "mirror")
 
 /// Receives the workout session mirrored from the watch and the metrics frames it sends.
+///
+/// All lifecycle transitions, launch/reattach/end timeouts, and stale-callback guards live in
+/// `CoachKit`'s pure `MirrorStateMachine`; this class is the thin MainActor HealthKit shell.
 @MainActor
 @Observable
 final class MirrorReceiver: NSObject {
@@ -13,33 +16,60 @@ final class MirrorReceiver: NSObject {
 
     let healthStore = HKHealthStore()
 
-    private(set) var state: HKWorkoutSessionState = .notStarted
-    private(set) var activity: WorkoutActivity?
+    private var machine = MirrorStateMachine()
     private(set) var latest: MetricsFrame?
     private(set) var stats = FrameStats()
-    private(set) var lastError: String?
-    /// Between "start on watch" and the watch's session arriving here; drives the button state.
-    private(set) var isStartingWatch = false
-    /// The watch took the start request but its data has not arrived yet. Mirroring took about a
-    /// minute on device (COCH-15) while the watch was already running: show the workout meanwhile.
-    private(set) var awaitingActivity: WorkoutActivity?
-    /// The watch has not taken the start request after `slowStartAfter`. `startWatchApp` only
-    /// returns once the request reached the watch: 59 s on device with the watch asleep (COCH-17).
-    private(set) var isWatchSlowToStart = false
-    @ObservationIgnored private var startAttempt = 0
+    private var authError: String?
 
     @ObservationIgnored private var session: HKWorkoutSession?
-    /// Start of the workout being shown: a re-attached session with the same start continues it.
-    @ObservationIgnored private var sessionStart: Date?
+    @ObservationIgnored private var sessionGeneration: Int?
+    @ObservationIgnored private var timers: [MirrorStateMachine.TimerID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var startTask: Task<Void, Never>?
+
     /// Called with every batch of received frames, e.g. to forward them to the coach.
     @ObservationIgnored var onFrames: (@MainActor ([MetricsFrame]) -> Void)?
     /// Called when a workout session from the watch attaches, and when it ends.
     @ObservationIgnored var onSessionStarted: (@MainActor (WorkoutActivity) -> Void)?
     @ObservationIgnored var onSessionEnded: (@MainActor () -> Void)?
 
-    var isActive: Bool { state != .notStarted && state != .ended }
-    var isRunning: Bool { state == .running }
-    var isPaused: Bool { state == .paused }
+    var state: HKWorkoutSessionState {
+        switch machine.phase {
+        case .idle, .launchingWatch, .awaitingMirror: .notStarted
+        case .active(let w), .disconnected(let w):
+            switch w.runState {
+            case .prepared: .prepared
+            case .running: .running
+            case .paused: .paused
+            case .stopping: .stopped
+            }
+        }
+    }
+
+    var activity: WorkoutActivity? { machine.activeActivity.map(WorkoutActivity.init(wireName:)) }
+    var awaitingActivity: WorkoutActivity? { machine.awaitingActivity.map(WorkoutActivity.init(wireName:)) }
+    var isActive: Bool { machine.isActive }
+    var isRunning: Bool { machine.isRunning }
+    var isPaused: Bool { machine.isPaused }
+    var isStartingWatch: Bool { machine.isStartingWatch }
+    var isWatchSlowToStart: Bool { machine.isWatchSlowToStart }
+
+    var lastError: String? {
+        if let notice = machine.notice { return Self.message(for: notice) }
+        return authError
+    }
+
+    /// When the phone starts telling the athlete to wake the watch or start on it instead.
+    static let slowStartAfter: Duration = .seconds(4)
+    /// How long the phone waits for the watch's session after asking it to start.
+    static let attachTimeout: Duration = .seconds(120)
+    /// How long the watch gets to confirm an end before the phone closes the workout on its own.
+    static let endTimeout: Duration = .seconds(5)
+    /// How long a disconnected workout waits for the watch to mirror again before the phone closes
+    /// it. HealthKit re-mirrors in about 15 s; a link that stays down past this means the workout
+    /// ended on the watch without the phone hearing of it (COCH-15).
+    static let reattachTimeout: Duration = .seconds(120)
+
+    static func ms(since date: Date) -> Int { Int((Date().timeIntervalSince(date) * 1000).rounded()) }
 
     /// Must run at launch: HealthKit may launch the app in the background to hand over a session.
     func install() {
@@ -51,76 +81,31 @@ final class MirrorReceiver: NSObject {
     func requestAuthorization() async {
         do {
             try await healthStore.requestAuthorization(toShare: HealthTypes.share, read: HealthTypes.read)
+            authError = nil
         } catch {
-            lastError = "健康权限请求失败：\(error.localizedDescription)"
+            authError = "健康权限请求失败：\(error.localizedDescription)"
         }
     }
 
     /// Launches the watch app and asks it to start the workout; the session then mirrors back here.
     func startOnWatch(_ activity: WorkoutActivity) async {
         diag("phone", "start on watch requested: \(activity.wireName), state \(state.label), session \(session != nil)")
-        guard !isStartingWatch else {
+        if isStartingWatch {
             diag("phone", "ignoring start: already waiting for the watch")
             return
         }
-        lastError = nil
-        isStartingWatch = true
-        isWatchSlowToStart = false
-        startAttempt += 1
-        let attempt = startAttempt
-        let began = Date()
-        // Both timers run from the tap: `startWatchApp` itself can hang for as long as the watch
-        // is unreachable, and the button must not look dead meanwhile (COCH-13, COCH-17).
-        Task { [weak self] in
-            try? await Task.sleep(for: Self.slowStartAfter)
-            guard let self, attempt == self.startAttempt, self.isStartingWatch, self.awaitingActivity == nil else { return }
-            diag("phone", "watch has not taken the start \(Self.slowStartAfter) after the tap")
-            self.isWatchSlowToStart = true
-        }
-        Task { [weak self] in
-            try? await Task.sleep(for: Self.attachTimeout)
-            guard let self, attempt == self.startAttempt, self.isStartingWatch else { return }
-            diag("phone", "no mirrored session \(Self.attachTimeout) after the tap")
-            self.stopWaiting()
-            self.lastError = "手表没有开始运动。请抬腕看看手表上的 coach-w：如果还停在上一场运动，先在手表上结束它；也可以直接在手表上开始。"
-        }
-        do {
-            try await healthStore.startWatchApp(toHandle: activity.configuration())
-            diag("phone", "startWatchApp returned after \(Self.ms(since: began)) ms; waiting for the watch to mirror")
-            if attempt == startAttempt, isStartingWatch {
-                isWatchSlowToStart = false
-                awaitingActivity = activity
-            }
-        } catch {
-            diag("phone", "startWatchApp failed after \(Self.ms(since: began)) ms: \(Self.describe(error))")
-            log.error("startWatchApp failed: \(error.localizedDescription)")
-            guard attempt == startAttempt, isStartingWatch else { return }
-            stopWaiting()
-            lastError = "无法从手机启动手表：\(error.localizedDescription)\n请抬腕解锁手表，或直接在手表上打开 coach-w 开始，手机会自动接上。"
-        }
+        authError = nil
+        dispatch(.startOnWatch(activity: activity.wireName))
     }
 
     /// Stops waiting for a start the watch has not taken yet. The request may still reach the
     /// watch later; a workout it starts then still mirrors here and shows up.
     func cancelStart() {
-        guard isStartingWatch, awaitingActivity == nil else { return }
-        diag("phone", "start on watch cancelled while waiting for the watch")
-        startAttempt += 1
-        stopWaiting()
+        if case .launchingWatch = machine.phase {
+            diag("phone", "start on watch cancelled while waiting for the watch")
+        }
+        dispatch(.cancelStart)
     }
-
-    private func stopWaiting() {
-        isStartingWatch = false
-        isWatchSlowToStart = false
-        awaitingActivity = nil
-    }
-
-    /// When the phone starts telling the athlete to wake the watch or start on it instead.
-    static let slowStartAfter: Duration = .seconds(4)
-    /// How long the phone waits for the watch's session after asking it to start.
-    static let attachTimeout: Duration = .seconds(120)
-
-    static func ms(since date: Date) -> Int { Int((Date().timeIntervalSince(date) * 1000).rounded()) }
 
     /// Forwards a coach cue to the watch over the mirrored session; expired cues are dropped.
     func sendToWatch(_ cue: CoachCue) {
@@ -138,23 +123,14 @@ final class MirrorReceiver: NSObject {
         }
     }
 
-    /// How long the watch gets to confirm an end before the phone closes the workout on its own.
-    static let endTimeout: Duration = .seconds(5)
-
     func pause() {
         diag("phone", "pause requested, state \(state.label), session \(session != nil)")
-        guard let session else { return lostWatch() }
-        session.pause()
+        dispatch(.pauseRequested)
     }
 
     func resume() {
         diag("phone", "resume requested, state \(state.label), session \(session != nil)")
-        guard let session else { return lostWatch() }
-        session.resume()
-    }
-
-    private func lostWatch() {
-        lastError = "手表已断开，暂停和继续请在手表上操作；点「结束」可在手机上结束本次记录。"
+        dispatch(.resumeRequested)
     }
 
     /// Asks the watch to end the workout. A watch that has gone away never answers, which left the
@@ -162,52 +138,118 @@ final class MirrorReceiver: NSObject {
     /// still owns and saves the HealthKit workout.
     func end() {
         diag("phone", "end requested, state \(state.label), session \(session.map { $0.state.label } ?? "none")")
-        guard let session else {
-            close(error: awaitingActivity != nil
-                ? "手机不再等手表的数据。手表上已经开始的运动请在手表上结束。"
-                : "手表已断开，已在手机上结束本次记录。手表上的运动请在手表上结束。")
-            return
-        }
-        session.stopActivity(with: .now)
-        Task { [weak self] in
-            try? await Task.sleep(for: Self.endTimeout)
-            guard let self, self.session === session, self.state != .ended else { return }
-            diag("phone", "watch did not confirm the end within \(Self.endTimeout) (state \(self.state.label)); closing on the phone")
-            self.close(error: "手表没有响应，已在手机上结束。手表上的运动请在手表上结束。")
+        dispatch(.endRequested)
+    }
+
+    // MARK: - State Machine Effect Runner
+
+    private func dispatch(_ event: MirrorStateMachine.Event, incoming: HKWorkoutSession? = nil) {
+        let effects = machine.handle(event)
+        for effect in effects { execute(effect, incoming: incoming) }
+    }
+
+    private func execute(_ effect: MirrorStateMachine.Effect, incoming: HKWorkoutSession?) {
+        switch effect {
+        case .callStartWatchApp(let wireName, let gen):
+            let activity = WorkoutActivity(wireName: wireName)
+            let began = Date()
+            startTask?.cancel()
+            startTask = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await self.healthStore.startWatchApp(toHandle: activity.configuration())
+                    diag("phone", "startWatchApp returned after \(Self.ms(since: began)) ms; waiting for the watch to mirror")
+                    self.dispatch(.watchAppStarted(generation: gen))
+                } catch {
+                    diag("phone", "startWatchApp failed after \(Self.ms(since: began)) ms: \(Self.describe(error))")
+                    log.error("startWatchApp failed: \(error.localizedDescription)")
+                    self.dispatch(.watchAppStartFailed(generation: gen, message: error.localizedDescription))
+                }
+            }
+
+        case .scheduleTimer(let id, let gen):
+            scheduleTimer(id, generation: gen)
+
+        case .cancelTimer(let id):
+            timers[id]?.cancel()
+            timers[id] = nil
+
+        case .sendPause:
+            session?.pause()
+
+        case .sendResume:
+            session?.resume()
+
+        case .sendStop:
+            session?.stopActivity(with: .now)
+
+        case .detachSession:
+            session?.delegate = nil
+            session = nil
+            sessionGeneration = nil
+
+        case .attachIncomingSession(let gen):
+            guard let incoming else { return }
+            session = incoming
+            sessionGeneration = gen
+            incoming.delegate = self
+
+        case .resetMetrics:
+            latest = nil
+            stats = FrameStats()
+
+        case .notifySessionStarted(let wireName):
+            onSessionStarted?(WorkoutActivity(wireName: wireName))
+
+        case .notifySessionEnded:
+            diag("phone", "workout closed on the phone")
+            onSessionEnded?()
         }
     }
 
-    private func close(error: String?) {
-        diag("phone", "workout closed on the phone\(error == nil ? "" : " with a message")")
-        stopWaiting()
-        session?.delegate = nil
-        session = nil
-        state = .ended
-        lastError = error
-        onSessionEnded?()
+    private func scheduleTimer(_ id: MirrorStateMachine.TimerID, generation gen: Int) {
+        timers[id]?.cancel()
+        let duration: Duration = switch id {
+        case .slowStart: Self.slowStartAfter
+        case .attachTimeout: Self.attachTimeout
+        case .endTimeout: Self.endTimeout
+        case .reattachTimeout: Self.reattachTimeout
+        }
+        timers[id] = Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            guard !Task.isCancelled, let self else { return }
+            self.timers[id] = nil
+            switch id {
+            case .slowStart:
+                diag("phone", "watch has not taken the start \(Self.slowStartAfter) after the tap")
+                self.dispatch(.slowStartTimerFired(generation: gen))
+            case .attachTimeout:
+                diag("phone", "no mirrored session \(Self.attachTimeout) after the tap")
+                self.dispatch(.attachTimerFired(generation: gen))
+            case .endTimeout:
+                diag("phone", "watch did not confirm the end within \(Self.endTimeout) (state \(self.state.label)); closing on the phone")
+                self.dispatch(.endTimerFired(generation: gen))
+            case .reattachTimeout:
+                diag("phone", "watch did not mirror again within \(Self.reattachTimeout); closing on the phone")
+                self.dispatch(.reattachTimerFired(generation: gen))
+            }
+        }
     }
 
     private func attach(_ mirrored: HKWorkoutSession) {
-        // HealthKit hands over a new session for the same workout after the watch link drops and
-        // comes back (measured on device 2026-11-22: ~15 s later). That is not a new workout: keep
-        // its record and numbers going.
-        let continuing = isActive && sessionStart != nil && mirrored.startDate == sessionStart
-        diag("phone", "mirrored session attached, state \(mirrored.state.label), continuing \(continuing)")
-        stopWaiting()
-        session?.delegate = nil
-        session = mirrored
-        mirrored.delegate = self
-        state = mirrored.state
-        lastError = nil
-        guard !continuing else { return }
-        sessionStart = mirrored.startDate
-        activity = WorkoutActivity(healthKitType: mirrored.workoutConfiguration.activityType)
-        latest = nil
-        stats = FrameStats()
-        if let activity { onSessionStarted?(activity) }
+        let activity = WorkoutActivity(healthKitType: mirrored.workoutConfiguration.activityType)
+        diag("phone", "mirrored session attached, state \(mirrored.state.label)")
+        dispatch(
+            .sessionAttached(
+                activity: activity.wireName,
+                startedAt: mirrored.startDate,
+                state: mirrored.state.portable
+            ),
+            incoming: mirrored
+        )
     }
 
-    private func receive(_ frames: [MetricsFrame]) {
+    private func receive(_ frames: [MetricsFrame], generation gen: Int) {
         if let latest, latest.isStale(at: .now), let silence = latest.silence(at: .now) {
             diag("phone", "frames resumed after \(Int(silence))s of silence")
         }
@@ -217,21 +259,38 @@ final class MirrorReceiver: NSObject {
             if frame.isNewer(than: latest) { latest = frame }
         }
         onFrames?(frames)
-        if let latest { follow(latest.state) }
+        if let latest {
+            if latest.state == .ended { diag("phone", "watch reports the workout ended") }
+            dispatch(.framesReceived(generation: gen, latestState: latest.state))
+        }
     }
 
-    /// The watch's own state, from its newest frame. The mirrored session's state callbacks do not
-    /// always arrive (on device, a pause from the phone paused the watch but the phone never heard
-    /// of it), which left the pause button and "end" looking dead (COCH-12).
-    private func follow(_ watchState: WorkoutState) {
-        switch watchState {
-        case .running where state == .paused: state = .running
-        case .paused where state == .running: state = .paused
-        case .ended where isActive:
-            diag("phone", "watch reports the workout ended")
-            close(error: nil)
-        default: break
+    private static func message(for notice: MirrorStateMachine.Notice) -> String {
+        switch notice {
+        case .watchLaunchFailed(let message):
+            "无法从手机启动手表：\(message)\n请抬腕解锁手表，或直接在手表上打开 coach-w 开始，手机会自动接上。"
+        case .watchAttachTimedOut:
+            "手表没有开始运动。请抬腕看看手表上的 coach-w：如果还停在上一场运动，先在手表上结束它；也可以直接在手表上开始。"
+        case .sessionFailed(let message):
+            message
+        case .disconnected(let message):
+            "与手表断开：\(message)"
+        case .controlsUnavailableWhileDisconnected:
+            "手表已断开，暂停和继续请在手表上操作；点「结束」可在手机上结束本次记录。"
+        case .endedWhileAwaitingMirror:
+            "手机不再等手表的数据。手表上已经开始的运动请在手表上结束。"
+        case .endedWhileDisconnected:
+            "手表已断开，已在手机上结束本次记录。手表上的运动请在手表上结束。"
+        case .watchDidNotConfirmEnd:
+            "手表没有响应，已在手机上结束。手表上的运动请在手表上结束。"
+        case .reattachTimedOut:
+            "与手表断开太久，已在手机上保存本次记录。手表上的运动请在手表上确认已结束。"
         }
+    }
+
+    private nonisolated static func describe(_ error: Error) -> String {
+        let ns = error as NSError
+        return "\(ns.domain) \(ns.code) \(ns.localizedDescription)"
     }
 }
 
@@ -243,13 +302,10 @@ extension MirrorReceiver: HKWorkoutSessionDelegate {
         date: Date
     ) {
         diag("phone", "mirrored state \(fromState.label) -> \(toState.label)")
+        let portable = toState.portable
         Task { @MainActor in
-            guard self.session === workoutSession else { return }
-            self.state = toState
-            if toState == .ended {
-                self.session = nil
-                self.onSessionEnded?()
-            }
+            guard self.session === workoutSession, let gen = self.sessionGeneration else { return }
+            self.dispatch(.sessionStateChanged(generation: gen, state: portable))
         }
     }
 
@@ -257,9 +313,8 @@ extension MirrorReceiver: HKWorkoutSessionDelegate {
         let message = error.localizedDescription
         diag("phone", "mirrored session failed: \(Self.describe(error))")
         Task { @MainActor in
-            // a session this receiver already replaced must not put its error on the new workout
-            guard self.session === workoutSession else { return }
-            self.lastError = message
+            guard self.session === workoutSession, let gen = self.sessionGeneration else { return }
+            self.dispatch(.sessionFailed(generation: gen, message: message))
         }
     }
 
@@ -267,35 +322,11 @@ extension MirrorReceiver: HKWorkoutSessionDelegate {
         _ workoutSession: HKWorkoutSession, didDisconnectFromRemoteDeviceWithError error: Error?
     ) {
         diag("phone", "mirrored session disconnected: \(error.map(Self.describe) ?? "no error")")
-        // This session will not answer pause or end any more. Keep the dashboard (the watch may
-        // mirror again, which hands over a new session), but let "end" close it on the phone.
         let message = error?.localizedDescription ?? "unknown"
         Task { @MainActor in
-            guard self.session === workoutSession else { return }
-            self.session = nil
-            self.lastError = "与手表断开：\(message)"
-            self.closeIfNotReattached()
+            guard self.session === workoutSession, let gen = self.sessionGeneration else { return }
+            self.dispatch(.sessionDisconnected(generation: gen, message: message))
         }
-    }
-
-    /// How long a disconnected workout waits for the watch to mirror again before the phone closes
-    /// it. HealthKit re-mirrors in about 15 s; a link that stays down past this means the workout
-    /// ended on the watch without the phone hearing of it (COCH-15).
-    static let reattachTimeout: Duration = .seconds(120)
-
-    private func closeIfNotReattached() {
-        let start = sessionStart
-        Task { [weak self] in
-            try? await Task.sleep(for: Self.reattachTimeout)
-            guard let self, self.session == nil, self.isActive, self.sessionStart == start else { return }
-            diag("phone", "watch did not mirror again within \(Self.reattachTimeout); closing on the phone")
-            self.close(error: "与手表断开太久，已在手机上保存本次记录。手表上的运动请在手表上确认已结束。")
-        }
-    }
-
-    private nonisolated static func describe(_ error: Error) -> String {
-        let ns = error as NSError
-        return "\(ns.domain) \(ns.code) \(ns.localizedDescription)"
     }
 
     /// While the app is suspended HealthKit buffers frames and delivers them together on resume.
@@ -312,13 +343,25 @@ extension MirrorReceiver: HKWorkoutSessionDelegate {
             return frame
         }
         Task { @MainActor in
-            guard self.session === workoutSession else { return }
-            self.receive(frames)
+            guard self.session === workoutSession, let gen = self.sessionGeneration else { return }
+            self.receive(frames, generation: gen)
         }
     }
 }
 
 extension HKWorkoutSessionState {
+    var portable: WorkoutSessionState {
+        switch self {
+        case .notStarted: .notStarted
+        case .prepared: .prepared
+        case .running: .running
+        case .paused: .paused
+        case .stopped: .stopped
+        case .ended: .ended
+        @unknown default: .notStarted
+        }
+    }
+
     /// For diagnostics.
     var label: String {
         switch self {

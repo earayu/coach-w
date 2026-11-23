@@ -259,3 +259,28 @@ def test_dead_room_is_removed_after_coach_check_fails(clock: Clock):
     # subsequent request must not probe the already-dead room again
     assert start(c, code=BOB).status_code == 429
     assert checks == [first["room"]]
+
+
+def test_room_finished_webhook_settles_quota_without_participant_left(
+    client: TestClient, clock: Clock
+):
+    first = start(client).json()  # Alice: 30 min/day, 20 min/session
+    assert webhook(client, "participant_joined", first["room"], ATHLETE).status_code == 204
+    clock.now += 5 * 60
+    # participant_left missed; room_finished settles the 5 min and frees the remaining 25 min
+    assert webhook(client, "room_finished", first["room"], "").status_code == 204
+    second = start(client, athlete=other_athlete()).json()
+    assert second["room"] != first["room"]
+    assert second["max_session_s"] == 20 * 60
+
+
+def test_rejoin_window_prevents_parallel_overspend(client: TestClient, clock: Clock):
+    # Bob: 1 min/day; athlete joins, leaves after 10s, then reuses the still-live room
+    first = start(client, code=BOB).json()
+    webhook(client, "participant_joined", first["room"], ATHLETE)
+    clock.now += 10
+    webhook(client, "participant_left", first["room"], ATHLETE)
+    rejoined = start(client, code=BOB).json()
+    assert rejoined["room"] == first["room"]
+    # While the first athlete is rejoining that room, another athlete on Bob's code cannot overspend
+    assert start(client, code=BOB, athlete=other_athlete()).status_code == 429

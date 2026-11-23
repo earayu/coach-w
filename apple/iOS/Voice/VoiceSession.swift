@@ -11,13 +11,8 @@ private let log = Logger(subsystem: "com.earayu.coachw", category: "voice")
 /// The voice link to the coach (spec 7.1). The token API hands back the same room for every
 /// reconnect until LiveKit closes it, so a rejoin finds the same coach (spec 7.4).
 ///
-/// The only file that imports LiveKit. LiveKit's automatic audio session setup
-/// uses `.playAndRecord` with Bluetooth HFP/A2DP, which is what the headphones need.
-///
-/// When the link drops, or the coach stops answering heartbeats, it keeps trying with a fresh token
-/// (spec 7.4) until the user ends the voice
-/// session or the server says no; meanwhile `needsLocalFallback` tells the app to announce key
-/// cues itself. Each new session gets the workout so far as `coach.resume`.
+/// The only file that imports LiveKit. All lifecycle transitions live in `CoachKit`'s pure
+/// `VoiceStateMachine`; this class is the thin MainActor I/O shell that executes its effects.
 @MainActor
 @Observable
 final class VoiceSession: NSObject {
@@ -49,19 +44,30 @@ final class VoiceSession: NSObject {
         }
     }
 
-    private(set) var status: Status = .idle {
-        didSet {
-            let new = String(describing: status), old = String(describing: oldValue)
-            if new != old { diag("voice", "\(old) -> \(new)") }
-        }
-    }
-    private(set) var isMuted = false
-    private(set) var isCoachSpeaking = false
-    /// LiveKit hears the user's microphone right now: shows the user the coach can hear them.
-    private(set) var isUserSpeaking = false
+    private var machine = VoiceStateMachine()
     private(set) var framesSent = 0
     private(set) var cuesReceived = 0
-    private(set) var reconnects = 0
+
+    var status: Status {
+        switch machine.phase {
+        case .idle: .idle
+        case .requestingToken(let attempt, _): attempt > 0 ? .reconnecting : .requestingToken
+        case .connectingRoom(let attempt, _): attempt > 0 ? .reconnecting : .connecting
+        case .connected(let c): c.liveKitReconnecting ? .reconnecting : .connected
+        case .waitingToRetry: .offline
+        case .failed(.sessionEndedByServer): .failed("教练会话已结束")
+        case .failed(.error(let message)): .failed(message)
+        }
+    }
+
+    var isMuted: Bool { machine.isMuted }
+    var isCoachSpeaking: Bool { machine.isCoachSpeaking }
+    /// LiveKit hears the user's microphone right now: shows the user the coach can hear them.
+    var isUserSpeaking: Bool { machine.isUserSpeaking }
+    var reconnects: Int { machine.reconnects }
+    var isActive: Bool { machine.isActive }
+    /// The user wants the coach but cannot hear it right now: the phone speaks key cues itself.
+    var needsLocalFallback: Bool { machine.needsLocalFallback }
 
     /// Called with each coach cue from the agent that has not expired, e.g. to forward it to the watch.
     @ObservationIgnored var onCue: (@MainActor (CoachCue) -> Void)?
@@ -85,18 +91,6 @@ final class VoiceSession: NSObject {
     /// Text the agent takes as the user's words (livekit-agents' chat input).
     static let chatTopic = "lk.chat"
 
-    @ObservationIgnored private var room: Room?
-    @ObservationIgnored private var settings: AppSettings?
-    /// Bumped by every start, stop and retry: a start that resumes after a newer one gives up.
-    @ObservationIgnored private var generation = 0
-    /// Frames are published one after another, in the order they arrived (M3 trend windows).
-    @ObservationIgnored private var sendTail: Task<Void, Never>?
-    @ObservationIgnored private var retryTask: Task<Void, Never>?
-    @ObservationIgnored private var retryAttempt = 0
-    @ObservationIgnored private let policy = ReconnectPolicy()
-    @ObservationIgnored private var pathMonitor: NWPathMonitor?
-    @ObservationIgnored private var heartbeat: Task<Void, Never>?
-
     /// The coach answers this RPC (`server/src/coachw/session.py`). On mobile data the link died
     /// without LiveKit noticing for 30-90 s, and nobody heard the athlete meanwhile (COCH-15):
     /// unanswered pings end the link after about 10 s and the phone rejoins its room.
@@ -105,16 +99,16 @@ final class VoiceSession: NSObject {
     static let heartbeatTimeout: TimeInterval = 4
     static let heartbeatMisses = 2
 
-    var isActive: Bool {
-        switch status {
-        case .requestingToken, .connecting, .connected, .reconnecting, .offline: true
-        case .idle, .failed: false
-        }
-    }
-
-    /// The user wants the coach but cannot hear it right now: the phone speaks key cues itself.
-    var needsLocalFallback: Bool { isActive && status != .connected }
-
+    @ObservationIgnored private var room: Room?
+    @ObservationIgnored private var roomGeneration: Int?
+    @ObservationIgnored private var settings: AppSettings?
+    @ObservationIgnored private var pendingGrant: (generation: Int, grant: SessionGrant)?
+    /// Frames are published one after another, in the order they arrived (M3 trend windows).
+    @ObservationIgnored private var sendTail: Task<Void, Never>?
+    @ObservationIgnored private var connectTask: Task<Void, Never>?
+    @ObservationIgnored private var retryTask: Task<Void, Never>?
+    @ObservationIgnored private var pathMonitor: NWPathMonitor?
+    @ObservationIgnored private var heartbeat: Task<Void, Never>?
     @ObservationIgnored private let micMeter = MicMeter()
 
     func start(settings: AppSettings) async {
@@ -128,38 +122,22 @@ final class VoiceSession: NSObject {
         self.settings = settings
         framesSent = 0
         cuesReceived = 0
-        reconnects = 0
-        retryAttempt = 0
-        isMuted = false
-        isCoachSpeaking = false
-        isUserSpeaking = false
-        startPathMonitor()
-        await connect()
+        dispatch(.start)
     }
 
     func stop() async {
         diag("voice", "stop requested")
-        generation += 1
-        retryTask?.cancel()
-        retryTask = nil
-        stopHeartbeat()
-        stopPathMonitor()
-        let room = self.room
-        self.room = nil
-        sendTail?.cancel()
-        sendTail = nil
-        isCoachSpeaking = false
-        isUserSpeaking = false
-        status = .idle
-        onStopped?()
-        await room?.disconnect()
+        let roomToClose = self.room
+        dispatch(.stop)
+        await roomToClose?.disconnect()
     }
 
     func toggleMute() async {
-        guard status == .connected, let room else { return }
+        guard status == .connected, let room, let gen = roomGeneration else { return }
+        let targetMuted = !isMuted
         do {
-            try await room.localParticipant.setMicrophone(enabled: isMuted)
-            isMuted.toggle()
+            try await room.localParticipant.setMicrophone(enabled: !targetMuted)
+            dispatch(.muteChanged(generation: gen, isMuted: targetMuted))
         } catch {
             log.error("mute toggle failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -186,109 +164,160 @@ final class VoiceSession: NSObject {
         }
     }
 
+    /// Tells the coach what the athlete said while it could not hear them (spec 7.4).
+    func sendOfflineSpeech(_ text: String) async {
+        guard status == .connected, let room else { return }
+        do {
+            _ = try await room.localParticipant.sendText("（刚才断网的时候我说了：\(text)）", for: Self.chatTopic)
+            diag("voice", "sent \(text.count) characters said offline to the coach")
+        } catch {
+            log.error("sending offline speech failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    // MARK: - State Machine Effect Runner
+
+    private func dispatch(_ event: VoiceStateMachine.Event) {
+        let before = String(describing: status)
+        let effects = machine.handle(event)
+        let after = String(describing: status)
+        if before != after { diag("voice", "\(before) -> \(after)") }
+        for effect in effects { execute(effect) }
+    }
+
+    private func execute(_ effect: VoiceStateMachine.Effect) {
+        switch effect {
+        case .startPathMonitor:
+            startPathMonitor()
+        case .stopPathMonitor:
+            stopPathMonitor()
+        case .requestToken(let gen):
+            requestToken(generation: gen)
+        case .connectRoom(let gen, let micEnabled):
+            connectRoom(generation: gen, micEnabled: micEnabled)
+        case .disconnectRoom:
+            disconnectCurrentRoom()
+        case .startHeartbeat(let gen):
+            if let room, roomGeneration == gen { startHeartbeat(in: room, generation: gen) }
+        case .stopHeartbeat:
+            stopHeartbeat()
+        case .cancelSendTail:
+            sendTail?.cancel()
+            sendTail = nil
+        case .scheduleRetry(let gen, let delay):
+            retryTask?.cancel()
+            retryTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled else { return }
+                self?.dispatch(.retryTimerFired(generation: gen))
+            }
+        case .cancelRetry:
+            retryTask?.cancel()
+            retryTask = nil
+        case .notifyConnected:
+            onConnected?()
+        case .notifyLinkLost:
+            onLinkLost?()
+        case .notifyStopped:
+            onStopped?()
+        }
+    }
+
     // MARK: - Connecting
 
-    private func connect() async {
+    private func requestToken(generation gen: Int) {
         guard let settings else { return }
-        generation += 1
-        let attempt = generation
-        retryTask?.cancel()
-        retryTask = nil
-        status = retryAttempt > 0 ? .reconnecting : .requestingToken
-        do {
-            let grant = try await TokenClient.requestSession(
-                baseURL: settings.apiBaseURL, inviteCode: settings.trimmedInviteCode, athleteID: settings.athleteID,
-                cueWriter: settings.cueWriter
-            )
-            guard attempt == generation else { return }
-            if retryAttempt == 0 { status = .connecting }
-            let room = Room(delegate: self)
-            self.room = room
-            try await room.connect(url: grant.serverUrl, token: grant.token)
-            // stopped while connecting: stop() already let go of this room, make sure it is closed
-            guard attempt == generation else {
+        let baseURL = settings.apiBaseURL
+        let inviteCode = settings.trimmedInviteCode
+        let athleteID = settings.athleteID
+        let cueWriter = settings.cueWriter
+        connectTask?.cancel()
+        connectTask = Task { [weak self] in
+            do {
+                let grant = try await TokenClient.requestSession(
+                    baseURL: baseURL, inviteCode: inviteCode, athleteID: athleteID, cueWriter: cueWriter
+                )
+                guard let self, !Task.isCancelled else { return }
+                if self.machine.generation == gen {
+                    self.pendingGrant = (gen, grant)
+                    self.dispatch(.tokenSucceeded(generation: gen))
+                }
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                log.error("voice token request failed: \(error.localizedDescription, privacy: .public)")
+                self.dispatch(.tokenFailed(
+                    generation: gen, drop: Self.drop(for: error), message: error.localizedDescription
+                ))
+            }
+        }
+    }
+
+    private func connectRoom(generation gen: Int, micEnabled: Bool) {
+        guard let pending = pendingGrant, pending.generation == gen else { return }
+        pendingGrant = nil
+        let grant = pending.grant
+        let room = Room(delegate: self)
+        self.room = room
+        self.roomGeneration = gen
+        connectTask?.cancel()
+        connectTask = Task { [weak self] in
+            do {
+                try await room.connect(url: grant.serverUrl, token: grant.token)
+                guard let self, self.machine.generation == gen else {
+                    await room.disconnect()
+                    return
+                }
+                await self.listenForTranscripts(in: room)
+                await self.answerPlaces(in: room)
+                try await room.localParticipant.setMicrophone(enabled: micEnabled)
+                guard self.machine.generation == gen else {
+                    await room.disconnect()
+                    return
+                }
+                self.dispatch(.roomReady(generation: gen))
+                log.info("joined room \(grant.room, privacy: .public)")
+                MicMeter.logAudioState("after connect")
+                Task {
+                    try? await Task.sleep(for: .seconds(4))
+                    MicMeter.logAudioState("4s after connect")
+                }
+                // an agent that is already here gets the workout now; one that joins later on arrival
+                if room.remoteParticipants.values.contains(where: { $0.kind == .agent }) {
+                    await self.sendResume()
+                }
+            } catch {
+                guard let self else {
+                    await room.disconnect()
+                    return
+                }
+                log.error("voice connect failed: \(error.localizedDescription, privacy: .public)")
+                if self.room === room {
+                    self.room = nil
+                    self.roomGeneration = nil
+                }
                 await room.disconnect()
-                return
-            }
-            await listenForTranscripts(in: room)
-            await answerPlaces(in: room)
-            try await room.localParticipant.setMicrophone(enabled: !isMuted)
-            guard attempt == generation else {
-                await room.disconnect()
-                return
-            }
-            if retryAttempt > 0 { reconnects += 1 }
-            retryAttempt = 0
-            status = .connected
-            onConnected?()
-            log.info("joined room \(grant.room, privacy: .public)")
-            MicMeter.logAudioState("after connect")
-            Task {
-                try? await Task.sleep(for: .seconds(4))
-                MicMeter.logAudioState("4s after connect")
-            }
-            startHeartbeat(in: room)
-            // an agent that is already here gets the workout now; one that joins later on arrival
-            if room.remoteParticipants.values.contains(where: { $0.kind == .agent }) { await sendResume() }
-        } catch {
-            guard attempt == generation else { return }
-            log.error("voice start failed: \(error.localizedDescription, privacy: .public)")
-            let failed = self.room
-            self.room = nil
-            await failed?.disconnect()
-            guard attempt == generation else { return }
-            if policy.shouldRetry(Self.drop(for: error)) {
-                scheduleRetry()
-            } else {
-                giveUp(error.localizedDescription)
+                self.dispatch(.roomConnectFailed(
+                    generation: gen, drop: Self.drop(for: error), message: error.localizedDescription
+                ))
             }
         }
     }
 
-    private func scheduleRetry() {
-        let delay = policy.delay(forAttempt: retryAttempt)
-        retryAttempt += 1
-        status = .offline
-        retryTask?.cancel()
-        retryTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled else { return }
-            await self?.connect()
+    private func disconnectCurrentRoom() {
+        connectTask?.cancel()
+        connectTask = nil
+        pendingGrant = nil
+        let old = self.room
+        self.room = nil
+        self.roomGeneration = nil
+        if let old {
+            Task { await old.disconnect() }
         }
-    }
-
-    private func giveUp(_ message: String) {
-        retryTask?.cancel()
-        retryTask = nil
-        stopHeartbeat()
-        stopPathMonitor()
-        isCoachSpeaking = false
-        isUserSpeaking = false
-        status = .failed(message)
-        onStopped?()
-    }
-
-    /// The link of a connected session went away.
-    private func linkDropped(_ error: LiveKitError?) {
-        room = nil
-        stopHeartbeat()
-        sendTail?.cancel()
-        sendTail = nil
-        isCoachSpeaking = false
-        isUserSpeaking = false
-        // the server closed the session on purpose (time cap, removed): do not start a new one
-        if let type = error?.type, [.roomDeleted, .participantRemoved, .duplicateIdentity].contains(type) {
-            giveUp("教练会话已结束")
-            return
-        }
-        log.info("voice link lost: \(error.map { String(describing: $0.type) } ?? "no error", privacy: .public)")
-        onLinkLost?()
-        scheduleRetry()
     }
 
     /// Pings the coach while this room is current. A coach that never answers means the link is
     /// dead even if LiveKit still says connected or reconnecting: drop it and rejoin.
-    private func startHeartbeat(in room: Room) {
+    private func startHeartbeat(in room: Room, generation gen: Int) {
         stopHeartbeat()
         let id = ObjectIdentifier(room)
         heartbeat = Task { [weak self] in
@@ -314,10 +343,9 @@ final class VoiceSession: NSObject {
                 } catch {
                     misses += 1
                     diag("voice", "heartbeat missed (\(misses)): \(error.localizedDescription)")
-                    guard misses >= Self.heartbeatMisses, self.isCurrent(id), self.isActive else { continue }
+                    guard misses >= Self.heartbeatMisses, self.isCurrent(id) else { continue }
                     diag("voice", "coach unreachable for \(misses) heartbeats; rejoining")
-                    self.linkDropped(nil)
-                    await room.disconnect()
+                    self.dispatch(.heartbeatFailed(generation: gen))
                     return
                 }
             }
@@ -344,9 +372,11 @@ final class VoiceSession: NSObject {
         monitor.pathUpdateHandler = { [weak self] path in
             guard path.status == .satisfied else { return }
             Task { @MainActor in
-                guard let self, self.status == .offline else { return }
-                log.info("network is back, reconnecting now")
-                await self.connect()
+                guard let self else { return }
+                if case .waitingToRetry = self.machine.phase {
+                    log.info("network is back, reconnecting now")
+                    self.dispatch(.networkSatisfied)
+                }
             }
         }
         monitor.start(queue: DispatchQueue(label: "com.earayu.coachw.path"))
@@ -371,17 +401,6 @@ final class VoiceSession: NSObject {
             log.info("sent coach.resume")
         } catch {
             log.error("publish coach.resume failed: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    /// Tells the coach what the athlete said while it could not hear them (spec 7.4).
-    func sendOfflineSpeech(_ text: String) async {
-        guard status == .connected, let room else { return }
-        do {
-            _ = try await room.localParticipant.sendText("（刚才断网的时候我说了：\(text)）", for: Self.chatTopic)
-            diag("voice", "sent \(text.count) characters said offline to the coach")
-        } catch {
-            log.error("sending offline speech failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -422,14 +441,6 @@ final class VoiceSession: NSObject {
         }
     }
 
-    private func update(_ state: ConnectionState) {
-        switch state {
-        case .connected where status == .reconnecting: status = .connected
-        case .reconnecting where status == .connected: status = .reconnecting
-        default: break
-        }
-    }
-
     private func receive(_ cue: CoachCue) {
         guard !cue.isExpired(at: .now) else {
             log.info("dropping expired cue \(cue.id, privacy: .public)")
@@ -442,6 +453,11 @@ final class VoiceSession: NSObject {
     /// Delegate callbacks may come from a room this session already let go of.
     private func isCurrent(_ id: ObjectIdentifier) -> Bool {
         room.map(ObjectIdentifier.init) == id
+    }
+
+    private nonisolated static func isFatalDisconnect(_ error: LiveKitError?) -> Bool {
+        guard let type = error?.type else { return false }
+        return [.roomDeleted, .participantRemoved, .duplicateIdentity].contains(type)
     }
 }
 
@@ -487,16 +503,26 @@ extension VoiceSession: RoomDelegate {
     nonisolated func room(_ room: Room, didUpdateConnectionState connectionState: ConnectionState, from oldConnectionState: ConnectionState) {
         let id = ObjectIdentifier(room)
         Task { @MainActor in
-            guard self.isCurrent(id) else { return }
-            self.update(connectionState)
+            guard self.isCurrent(id), let gen = self.roomGeneration else { return }
+            switch connectionState {
+            case .connected:
+                self.dispatch(.liveKitConnectionChanged(generation: gen, reconnecting: false))
+            case .reconnecting:
+                self.dispatch(.liveKitConnectionChanged(generation: gen, reconnecting: true))
+            default:
+                break
+            }
         }
     }
 
     nonisolated func room(_ room: Room, didDisconnectWithError error: LiveKitError?) {
         let id = ObjectIdentifier(room)
+        let fatal = Self.isFatalDisconnect(error)
+        let desc = error.map { String(describing: $0.type) } ?? "no error"
         Task { @MainActor in
-            guard self.isCurrent(id), self.isActive else { return }
-            self.linkDropped(error)
+            guard self.isCurrent(id), let gen = self.roomGeneration else { return }
+            log.info("voice link lost: \(desc, privacy: .public)")
+            self.dispatch(.roomDisconnected(generation: gen, isFatal: fatal))
         }
     }
 
@@ -506,10 +532,9 @@ extension VoiceSession: RoomDelegate {
         guard participant.kind == .agent else { return }
         let id = ObjectIdentifier(room)
         Task { @MainActor in
-            guard self.isCurrent(id), self.status == .connected || self.status == .reconnecting else { return }
+            guard self.isCurrent(id), let gen = self.roomGeneration else { return }
             log.info("coach left the room; starting a new session")
-            self.linkDropped(nil)
-            await room.disconnect()
+            self.dispatch(.agentLeft(generation: gen))
         }
     }
 
@@ -527,9 +552,8 @@ extension VoiceSession: RoomDelegate {
         let speaking = participants.contains { $0.kind == .agent }
         let userSpeaking = participants.contains { $0 is LocalParticipant }
         Task { @MainActor in
-            guard self.isCurrent(id) else { return }
-            self.isCoachSpeaking = speaking
-            self.isUserSpeaking = userSpeaking
+            guard self.isCurrent(id), let gen = self.roomGeneration else { return }
+            self.dispatch(.speakingChanged(generation: gen, coach: speaking, user: userSpeaking))
         }
     }
 

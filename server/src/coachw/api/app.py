@@ -163,6 +163,7 @@ def create_app(
         elif event.event == "participant_left":
             ledger.left(event.room.name, event.participant.identity, now)
         elif event.event == "room_finished":
+            ledger.room_finished(event.room.name, now)
             for key in [k for k, room in rooms.items() if room == event.room.name]:
                 del rooms[key]
 

@@ -8,6 +8,9 @@ import os
 private let log = Logger(subsystem: "com.earayu.coachw.watch", category: "workout")
 
 /// Owns the primary workout session on the watch and streams metrics frames to the iPhone.
+///
+/// All lifecycle transitions (`recover`, `start`, HealthKit state changes, saving, timeouts) live
+/// in `CoachKit`'s pure `WatchWorkoutStateMachine`; this class is the thin WatchKit/HealthKit shell.
 @MainActor
 @Observable
 final class WorkoutController: NSObject {
@@ -15,39 +18,61 @@ final class WorkoutController: NSObject {
 
     let healthStore = HKHealthStore()
 
-    private(set) var state: HKWorkoutSessionState = .notStarted
-    private(set) var activity: WorkoutActivity?
+    private var machine = WatchWorkoutStateMachine(finishTimeoutSeconds: 15)
     private(set) var latest: MetricsFrame?
-    private(set) var lastError: String?
+    private var authError: String?
+    private var mirrorError: String?
     /// The coach cue on screen, if any (spec 4.1: key cues also buzz the watch).
     private(set) var cue: CoachCue?
 
-    var isRunning: Bool { state == .running }
-    var isPaused: Bool { state == .paused }
+    var state: HKWorkoutSessionState {
+        switch machine.phase {
+        case .idle, .recovering, .starting: .notStarted
+        case .active(_, .prepared): .prepared
+        case .active(_, .running): .running
+        case .active(_, .paused): .paused
+        case .saving: .stopped
+        }
+    }
+
+    var activity: WorkoutActivity? { machine.activity.map(WorkoutActivity.init(wireName:)) }
+    var isRunning: Bool { machine.isRunning }
+    var isPaused: Bool { machine.isPaused }
+    var isFinishing: Bool { machine.isFinishing }
+
+    var lastError: String? {
+        if let notice = machine.notice { return Self.message(for: notice) }
+        return mirrorError ?? authError
+    }
 
     @ObservationIgnored private var session: HKWorkoutSession?
+    @ObservationIgnored private var sessionGeneration: Int?
     @ObservationIgnored private var builder: HKLiveWorkoutBuilder?
     @ObservationIgnored private var frames: FrameBuilder?
+    @ObservationIgnored private var pendingConfiguration: HKWorkoutConfiguration?
     /// Sends a frame every second while running, so elapsed time stays fresh and a missing
     /// stream means a broken link rather than "no new samples".
     @ObservationIgnored private var heartbeat: Task<Void, Never>?
     @ObservationIgnored private var cueDismissal: Task<Void, Never>?
+    @ObservationIgnored private var timers: [WatchWorkoutStateMachine.TimerID: Task<Void, Never>] = [:]
     /// GPS for outdoor activities: the route goes to HealthKit with the workout, the latest fix
     /// into the frames (docs/spec.md 6.3, 11).
     @ObservationIgnored private let locationFeed = LocationFeed()
     @ObservationIgnored private var routeBuilder: HKWorkoutRouteBuilder?
-    @ObservationIgnored private var starting = false
-    @ObservationIgnored private var stoppedAt: Date?
     @ObservationIgnored private var sendFailures = 0
 
     /// A cue stays on screen at most this long, and never past its expiry.
     static let cueDisplaySeconds: TimeInterval = 4
+    /// How long saving may take after a stop before the watch gives up waiting and ends the session.
+    static let finishTimeout: Duration = .seconds(15)
+    static let forceResetTimeout: Duration = .seconds(2)
 
     func requestAuthorization() async {
         do {
             try await healthStore.requestAuthorization(toShare: HealthTypes.share, read: HealthTypes.read)
+            authError = nil
         } catch {
-            lastError = "健康权限请求失败：\(error.localizedDescription)"
+            authError = "健康权限请求失败：\(error.localizedDescription)"
         }
     }
 
@@ -59,185 +84,37 @@ final class WorkoutController: NSObject {
     func start(_ configuration: HKWorkoutConfiguration) async {
         let wanted = WorkoutActivity(healthKitType: configuration.activityType).wireName
         diag("watch", "start \(wanted) requested, state \(state.label), session \(session.map { $0.state.label } ?? "none")")
-        guard !starting else {
-            diag("watch", "ignoring start: another start is in progress")
-            return
-        }
-        if let session {
-            // A session that already stopped or ended but never reached `reset()` (a finish that
-            // failed or hung) used to swallow every later start silently (COCH-13).
-            guard !session.state.isActive || session.state == .stopped else {
-                diag("watch", "ignoring start: a \(activity?.wireName ?? "?") workout is \(session.state.label)")
-                lastError = "已有一场运动在进行，请先结束它。"
-                return
-            }
-            if session.state == .stopped, let stoppedAt, Date().timeIntervalSince(stoppedAt) < Self.finishTimeout.seconds {
-                diag("watch", "ignoring start: the last workout is still saving")
-                lastError = "上一场运动正在保存，请稍候再开始。"
-                return
-            }
-            diag("watch", "discarding a leftover \(session.state.label) session before starting")
-            session.end()
-            reset()
-        }
-        starting = true
-        defer { starting = false }
-        let began = Date()
-        do {
-            let session = try HKWorkoutSession(healthStore: healthStore, configuration: configuration)
-            let builder = adopt(session)
-            // Mirroring waits on the iPhone. Awaited before `startActivity` it blocked the start
-            // when the phone was slow or away (COCH-13); started after `beginCollection` the
-            // phone got the session about a minute late (COCH-15). Ask first, wait for nothing:
-            // the workout must not depend on it (AGENTS.md 1).
-            startMirroring(session)
-            let startDate = Date()
-            session.startActivity(with: startDate)
-            try await builder.beginCollection(at: startDate)
-            diag("watch", "workout \(wanted) started in \(Self.ms(since: began)) ms")
-            if activity?.usesGPS == true { startRoute(builder) }
-        } catch {
-            diag("watch", "start \(wanted) failed after \(Self.ms(since: began)) ms: \(error.localizedDescription)")
-            log.error("failed to start workout: \(error.localizedDescription)")
-            lastError = "开始运动失败：\(error.localizedDescription)"
-            // a half-started session would keep running (and mirroring) with nobody feeding it
-            session?.end()
-            reset()
-        }
-    }
-
-    private func startMirroring(_ session: HKWorkoutSession) {
-        Task { [weak self] in
-            let began = Date()
-            do {
-                try await session.startMirroringToCompanionDevice()
-                diag("watch", "mirroring to iPhone started in \(Self.ms(since: began)) ms")
-            } catch {
-                diag("watch", "mirroring to iPhone failed after \(Self.ms(since: began)) ms: \(error.localizedDescription)")
-                guard let self, self.session === session else { return }
-                self.lastError = "未连上 iPhone：\(error.localizedDescription)。运动照常记录。"
-            }
-        }
+        pendingConfiguration = configuration
+        authError = nil
+        mirrorError = nil
+        dispatch(.startRequested(activity: wanted, now: .now))
     }
 
     /// Picks up the workout that was running when the app quit or crashed. watchOS relaunches the
     /// app for it; without this the session keeps running but no frame reaches the iPhone again.
     func recover() async {
-        guard session == nil else { return }
-        do {
-            guard let session = try await healthStore.recoverActiveWorkoutSession() else {
-                diag("watch", "recovery: no active workout")
-                return
-            }
-            diag("watch", "recovered active workout, state \(session.state.label)")
-            log.info("recovered active workout session")
-            let builder = adopt(session)
-            state = session.state
-            if session.state == .stopped {
-                // the app quit while saving: no state change will come to finish it, and the
-                // workout would never reach HealthKit (AGENTS.md 1)
-                diag("watch", "recovered a stopped workout; saving it now")
-                await finish(at: session.endDate ?? .now)
-                return
-            }
-            updateHeartbeat()
-            if activity?.usesGPS == true { startRoute(builder) }
-            do {
-                try await session.startMirroringToCompanionDevice()
-            } catch {
-                // still mirroring from before the relaunch
-                log.info("mirroring after recovery: \(error.localizedDescription, privacy: .public)")
-            }
-            ingest([], elapsed: builder.elapsedTime, force: true)
-        } catch {
-            diag("watch", "workout recovery failed: \(error.localizedDescription)")
-            log.error("workout recovery failed: \(error.localizedDescription, privacy: .public)")
-            lastError = "恢复运动失败：\(error.localizedDescription)"
-        }
-    }
-
-    private func adopt(_ session: HKWorkoutSession) -> HKLiveWorkoutBuilder {
-        let configuration = session.workoutConfiguration
-        let activity = WorkoutActivity(healthKitType: configuration.activityType)
-        let builder = session.associatedWorkoutBuilder()
-        session.delegate = self
-        builder.delegate = self
-        builder.dataSource = HKLiveWorkoutDataSource(healthStore: healthStore, workoutConfiguration: configuration)
-        self.session = session
-        self.builder = builder
-        self.activity = activity
-        frames = FrameBuilder(activity: activity.wireName, minInterval: 0.9)
-        lastError = nil
-        return builder
-    }
-
-    private func startRoute(_ builder: HKLiveWorkoutBuilder) {
-        // associated with the workout builder: finished and saved together with the workout
-        routeBuilder = builder.seriesBuilder(for: HKSeriesType.workoutRoute()) as? HKWorkoutRouteBuilder
-        locationFeed.start { [weak self] locations in self?.receive(locations) }
-    }
-
-    private func receive(_ locations: [CLLocation]) {
-        guard state.isActive, let last = locations.last else { return }
-        if let routeBuilder {
-            Task {
-                do {
-                    try await routeBuilder.insertRouteData(locations)
-                } catch {
-                    log.error("route insert failed: \(error.localizedDescription, privacy: .public)")
-                }
-            }
-        }
-        let altitude = last.verticalAccuracy >= 0 ? last.altitude : nil
-        let reading = MetricReading.location(
-            latitude: last.coordinate.latitude, longitude: last.coordinate.longitude, altitudeMeters: altitude
-        )
-        ingest([reading], elapsed: builder?.elapsedTime ?? 0)
+        dispatch(.recoverRequested)
     }
 
     func pause() {
         diag("watch", "pause tapped, state \(state.label), session \(session != nil)")
-        session?.pause()
+        dispatch(.pauseRequested)
     }
 
     func resume() {
         diag("watch", "resume tapped, state \(state.label), session \(session != nil)")
-        session?.resume()
+        dispatch(.resumeRequested)
     }
-
-    /// How long saving may take after a stop before the watch gives up waiting and ends the session.
-    static let finishTimeout: Duration = .seconds(15)
 
     func end() {
         diag("watch", "end tapped, state \(state.label), session \(session.map { $0.state.label } ?? "none")")
-        guard let session else {
-            // the UI is showing a workout the controller no longer has
-            reset()
-            return
-        }
-        if session.state == .stopped {
-            // already stopped and still saving: a second tap must not be a no-op (COCH-13)
-            diag("watch", "end tapped while saving: ending the session now")
-            session.end()
-            return
-        }
-        session.stopActivity(with: .now)
-        Task { [weak self] in
-            try? await Task.sleep(for: Self.finishTimeout)
-            guard let self, self.session === session, session.state != .ended else { return }
-            diag("watch", "workout did not end \(Self.finishTimeout) after stop (state \(session.state.label)); ending it")
-            session.end()
-            try? await Task.sleep(for: .seconds(2))
-            if self.session === session { self.reset() }
-        }
+        dispatch(.endRequested)
     }
-
-    var isFinishing: Bool { state == .stopped }
 
     /// Buzzes and shows a cue from the coach. Expired cues are dropped: a late buzz misleads.
     func present(_ cue: CoachCue) {
         let now = Date()
-        guard state.isActive, !cue.isExpired(at: now) else {
+        guard machine.isActive, !cue.isExpired(at: now) else {
             log.info("dropping cue \(cue.id, privacy: .public): expired or no workout")
             return
         }
@@ -252,10 +129,219 @@ final class WorkoutController: NSObject {
         }
     }
 
-    private func updateHeartbeat() {
-        heartbeat?.cancel()
-        heartbeat = nil
-        guard state == .running else { return }
+    // MARK: - State Machine Effect Runner
+
+    private func dispatch(_ event: WatchWorkoutStateMachine.Event) {
+        let effects = machine.handle(event)
+        for effect in effects { execute(effect) }
+    }
+
+    private func execute(_ effect: WatchWorkoutStateMachine.Effect) {
+        switch effect {
+        case .runRecovery(let gen):
+            Task { [weak self] in await self?.runRecovery(generation: gen) }
+
+        case .startSession(let wireName, let gen):
+            let configuration = pendingConfiguration ?? WorkoutActivity(wireName: wireName).configuration()
+            pendingConfiguration = nil
+            Task { [weak self] in await self?.runStart(configuration: configuration, wanted: wireName, generation: gen) }
+
+        case .beginSaving(let gen, let date):
+            locationFeed.stop()
+            Task { [weak self] in await self?.runFinish(generation: gen, at: date) }
+
+        case .startRouteIfGPS:
+            if activity?.usesGPS == true, routeBuilder == nil, let builder {
+                startRoute(builder)
+            }
+
+        case .startMirroringAfterRecovery(let gen):
+            guard let session, sessionGeneration == gen else { return }
+            Task {
+                do {
+                    try await session.startMirroringToCompanionDevice()
+                } catch {
+                    // still mirroring from before the relaunch
+                    log.info("mirroring after recovery: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+
+        case .startHeartbeat:
+            startHeartbeat()
+
+        case .stopHeartbeat:
+            stopHeartbeat()
+
+        case .pauseSession:
+            session?.pause()
+
+        case .resumeSession:
+            session?.resume()
+
+        case .stopActivity:
+            session?.stopActivity(with: .now)
+
+        case .endSession:
+            session?.end()
+
+        case .emitForcedFrame(let wireState, let date):
+            ingest([], elapsed: builder?.elapsedTime(at: date) ?? 0, wireState: wireState, force: true)
+
+        case .scheduleTimer(let id, let gen):
+            scheduleTimer(id, generation: gen)
+
+        case .cancelTimer(let id):
+            timers[id]?.cancel()
+            timers[id] = nil
+
+        case .resetResources:
+            resetResources()
+        }
+    }
+
+    private func runStart(configuration: HKWorkoutConfiguration, wanted: String, generation gen: Int) async {
+        guard machine.generation == gen else { return }
+        let began = Date()
+        do {
+            let session = try HKWorkoutSession(healthStore: healthStore, configuration: configuration)
+            let builder = adopt(session, generation: gen)
+            // Mirroring waits on the iPhone. Ask first, wait for nothing: the workout must not
+            // depend on it (AGENTS.md 1, COCH-13, COCH-15).
+            startMirroring(session, generation: gen)
+            let startDate = Date()
+            session.startActivity(with: startDate)
+            try await builder.beginCollection(at: startDate)
+            diag("watch", "workout \(wanted) started in \(Self.ms(since: began)) ms")
+            dispatch(.startSucceeded(generation: gen))
+        } catch {
+            diag("watch", "start \(wanted) failed after \(Self.ms(since: began)) ms: \(error.localizedDescription)")
+            log.error("failed to start workout: \(error.localizedDescription)")
+            dispatch(.startFailed(generation: gen, message: error.localizedDescription))
+        }
+    }
+
+    private func runRecovery(generation gen: Int) async {
+        do {
+            guard let session = try await healthStore.recoverActiveWorkoutSession() else {
+                diag("watch", "recovery: no active workout")
+                dispatch(.recoveryFoundNone(generation: gen))
+                return
+            }
+            guard machine.generation == gen else { return }
+            diag("watch", "recovered active workout, state \(session.state.label)")
+            log.info("recovered active workout session")
+            _ = adopt(session, generation: gen)
+            let activity = WorkoutActivity(healthKitType: session.workoutConfiguration.activityType)
+            if session.state == .stopped {
+                diag("watch", "recovered a stopped workout; saving it now")
+            }
+            dispatch(.recoveryFoundSession(
+                generation: gen,
+                activity: activity.wireName,
+                state: session.state.portable,
+                endDate: session.endDate ?? .now,
+                now: .now
+            ))
+        } catch {
+            diag("watch", "workout recovery failed: \(error.localizedDescription)")
+            log.error("workout recovery failed: \(error.localizedDescription, privacy: .public)")
+            dispatch(.recoveryFailed(generation: gen, message: error.localizedDescription))
+        }
+    }
+
+    private func runFinish(generation gen: Int, at date: Date) async {
+        guard sessionGeneration == gen, let builder else {
+            diag("watch", "stopped without a builder or session")
+            dispatch(.finishCompleted(generation: gen))
+            return
+        }
+        let began = Date()
+        do {
+            try await builder.endCollection(at: date)
+            _ = try await builder.finishWorkout()
+            diag("watch", "workout saved in \(Self.ms(since: began)) ms")
+            dispatch(.finishCompleted(generation: gen))
+        } catch {
+            diag("watch", "saving workout failed after \(Self.ms(since: began)) ms: \(error.localizedDescription)")
+            log.error("failed to finish workout: \(error.localizedDescription)")
+            dispatch(.finishFailed(generation: gen, message: error.localizedDescription))
+        }
+    }
+
+    private func startMirroring(_ session: HKWorkoutSession, generation gen: Int) {
+        Task { [weak self] in
+            let began = Date()
+            do {
+                try await session.startMirroringToCompanionDevice()
+                diag("watch", "mirroring to iPhone started in \(Self.ms(since: began)) ms")
+            } catch {
+                diag("watch", "mirroring to iPhone failed after \(Self.ms(since: began)) ms: \(error.localizedDescription)")
+                guard let self, self.session === session, self.sessionGeneration == gen else { return }
+                self.mirrorError = "未连上 iPhone：\(error.localizedDescription)。运动照常记录。"
+            }
+        }
+    }
+
+    private func adopt(_ session: HKWorkoutSession, generation gen: Int) -> HKLiveWorkoutBuilder {
+        let configuration = session.workoutConfiguration
+        let activity = WorkoutActivity(healthKitType: configuration.activityType)
+        let builder = session.associatedWorkoutBuilder()
+        session.delegate = self
+        builder.delegate = self
+        builder.dataSource = HKLiveWorkoutDataSource(healthStore: healthStore, workoutConfiguration: configuration)
+        self.session = session
+        self.sessionGeneration = gen
+        self.builder = builder
+        frames = FrameBuilder(activity: activity.wireName, minInterval: 0.9)
+        mirrorError = nil
+        return builder
+    }
+
+    private func startRoute(_ builder: HKLiveWorkoutBuilder) {
+        routeBuilder = builder.seriesBuilder(for: HKSeriesType.workoutRoute()) as? HKWorkoutRouteBuilder
+        locationFeed.start { [weak self] locations in self?.receive(locations) }
+    }
+
+    private func receive(_ locations: [CLLocation]) {
+        guard machine.isActive, let last = locations.last else { return }
+        if let routeBuilder {
+            Task {
+                do {
+                    try await routeBuilder.insertRouteData(locations)
+                } catch {
+                    log.error("inserting route data failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+        let altitude = last.verticalAccuracy >= 0 ? last.altitude : nil
+        let reading = MetricReading.location(
+            latitude: last.coordinate.latitude, longitude: last.coordinate.longitude, altitudeMeters: altitude
+        )
+        ingest([reading], elapsed: builder?.elapsedTime ?? 0)
+    }
+
+    private func scheduleTimer(_ id: WatchWorkoutStateMachine.TimerID, generation gen: Int) {
+        timers[id]?.cancel()
+        let duration: Duration = switch id {
+        case .finishTimeout: Self.finishTimeout
+        case .forceResetTimeout: Self.forceResetTimeout
+        }
+        timers[id] = Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            guard !Task.isCancelled, let self else { return }
+            self.timers[id] = nil
+            switch id {
+            case .finishTimeout:
+                diag("watch", "workout did not end \(Self.finishTimeout) after stop (state \(self.state.label)); ending it")
+                self.dispatch(.finishTimerFired(generation: gen))
+            case .forceResetTimeout:
+                self.dispatch(.forceResetTimerFired(generation: gen))
+            }
+        }
+    }
+
+    private func startHeartbeat() {
+        stopHeartbeat()
         heartbeat = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
@@ -265,30 +351,38 @@ final class WorkoutController: NSObject {
         }
     }
 
-    private func reset() {
-        locationFeed.stop()
-        routeBuilder = nil
+    private func stopHeartbeat() {
         heartbeat?.cancel()
         heartbeat = nil
+    }
+
+    private func resetResources() {
+        locationFeed.stop()
+        routeBuilder = nil
+        stopHeartbeat()
         session?.delegate = nil
         session = nil
+        sessionGeneration = nil
         builder?.delegate = nil
         builder = nil
         frames = nil
-        activity = nil
         latest = nil
         cueDismissal?.cancel()
         cue = nil
         sendFailures = 0
-        stoppedAt = nil
-        state = .notStarted
+        mirrorError = nil
     }
 
-    private func ingest(_ readings: [MetricReading], elapsed: TimeInterval, force: Bool = false) {
+    private func ingest(
+        _ readings: [MetricReading],
+        elapsed: TimeInterval,
+        wireState: WorkoutState? = nil,
+        force: Bool = false
+    ) {
         guard var frames else { return }
         let now = Date()
         for reading in readings { frames.apply(reading, at: now) }
-        let frame = frames.frame(state: state.wireState, elapsed: elapsed, at: now, force: force)
+        let frame = frames.frame(state: wireState ?? machine.wireState, elapsed: elapsed, at: now, force: force)
         self.frames = frames
         guard let frame else { return }
         latest = frame
@@ -314,42 +408,15 @@ final class WorkoutController: NSObject {
         }
     }
 
-    private func handleStateChange(to newState: HKWorkoutSessionState, at date: Date) async {
-        diag("watch", "session \(state.label) -> \(newState.label)")
-        state = newState
-        updateHeartbeat()
-        ingest([], elapsed: builder?.elapsedTime(at: date) ?? 0, force: true)
-        switch newState {
-        case .stopped:
-            await finish(at: date)
-        case .ended:
-            reset()
-        default:
-            break
+    private static func message(for notice: WatchWorkoutStateMachine.Notice) -> String {
+        switch notice {
+        case .alreadyActive: "已有一场运动在进行，请先结束它。"
+        case .previousWorkoutStillSaving: "上一场运动正在保存，请稍候再开始。"
+        case .startFailed(let message): "开始运动失败：\(message)"
+        case .recoveryFailed(let message): "恢复运动失败：\(message)"
+        case .sessionFailed(let message): message
+        case .saveFailed(let message): "保存运动失败：\(message)"
         }
-    }
-
-    /// Saves the stopped workout to HealthKit, then ends the session.
-    private func finish(at date: Date) async {
-        stoppedAt = .now
-        locationFeed.stop()
-        guard let builder, let session else {
-            diag("watch", "stopped without a builder or session")
-            return
-        }
-        let began = Date()
-        do {
-            try await builder.endCollection(at: date)
-            _ = try await builder.finishWorkout()
-            diag("watch", "workout saved in \(Self.ms(since: began)) ms")
-        } catch {
-            diag("watch", "saving workout failed after \(Self.ms(since: began)) ms: \(error.localizedDescription)")
-            log.error("failed to finish workout: \(error.localizedDescription)")
-            lastError = "保存运动失败：\(error.localizedDescription)"
-        }
-        // Always end: a session left in `stopped` kept the dial up with a dead "end" button and
-        // made every later start a silent no-op (COCH-13).
-        session.end()
     }
 }
 
@@ -360,9 +427,11 @@ extension WorkoutController: HKWorkoutSessionDelegate {
         from fromState: HKWorkoutSessionState,
         date: Date
     ) {
+        diag("watch", "session \(fromState.label) -> \(toState.label)")
+        let portable = toState.portable
         Task { @MainActor in
-            guard self.session === workoutSession else { return }
-            await self.handleStateChange(to: toState, at: date)
+            guard self.session === workoutSession, let gen = self.sessionGeneration else { return }
+            self.dispatch(.sessionStateChanged(generation: gen, state: portable, at: date, now: .now))
         }
     }
 
@@ -371,8 +440,8 @@ extension WorkoutController: HKWorkoutSessionDelegate {
         diag("watch", "workout session failed: \(message)")
         log.error("workout session failed: \(message)")
         Task { @MainActor in
-            guard self.session === workoutSession else { return }
-            self.lastError = message
+            guard self.session === workoutSession, let gen = self.sessionGeneration else { return }
+            self.dispatch(.sessionFailed(generation: gen, message: message))
         }
     }
 
@@ -414,8 +483,18 @@ extension WorkoutController {
     static func ms(since date: Date) -> Int { Int((Date().timeIntervalSince(date) * 1000).rounded()) }
 }
 
-extension Duration {
-    var seconds: TimeInterval { TimeInterval(components.seconds) + TimeInterval(components.attoseconds) / 1e18 }
+extension HKWorkoutSessionState {
+    var portable: WorkoutSessionState {
+        switch self {
+        case .notStarted: .notStarted
+        case .prepared: .prepared
+        case .running: .running
+        case .paused: .paused
+        case .stopped: .stopped
+        case .ended: .ended
+        @unknown default: .notStarted
+        }
+    }
 }
 
 extension CueHaptic {
