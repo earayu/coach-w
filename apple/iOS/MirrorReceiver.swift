@@ -46,6 +46,7 @@ final class MirrorReceiver: NSObject {
     }
 
     var activity: WorkoutActivity? { machine.activeActivity.map(WorkoutActivity.init(wireName:)) }
+    var startingActivity: WorkoutActivity? { machine.startingActivity.map(WorkoutActivity.init(wireName:)) }
     var awaitingActivity: WorkoutActivity? { machine.awaitingActivity.map(WorkoutActivity.init(wireName:)) }
     var isActive: Bool { machine.isActive }
     var isRunning: Bool { machine.isRunning }
@@ -119,6 +120,18 @@ final class MirrorReceiver: NSObject {
                 try await session.sendToRemoteWorkoutSession(data: data)
             } catch {
                 log.error("forwarding cue to watch failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Tells the watch whether the voice coach is with the athlete (spec 7.6).
+    func sendToWatch(_ status: CoachStatus) {
+        guard let session, let data = try? status.encoded() else { return }
+        Task {
+            do {
+                try await session.sendToRemoteWorkoutSession(data: data)
+            } catch {
+                log.error("sending coach status to watch failed: \(error.localizedDescription)")
             }
         }
     }

@@ -130,6 +130,14 @@ public struct MirrorStateMachine: Sendable, Equatable {
         return false
     }
 
+    /// The activity the phone asked the watch to start, until the watch has it.
+    public var startingActivity: String? {
+        switch phase {
+        case .launchingWatch(let activity, _), .awaitingMirror(let activity): activity
+        case .idle, .active, .disconnected: nil
+        }
+    }
+
     public var awaitingActivity: String? {
         if case .awaitingMirror(let activity) = phase { return activity }
         return nil

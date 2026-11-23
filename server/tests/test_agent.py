@@ -19,6 +19,7 @@ from coachw.agent.worker import (
     TurnLog,
     answer_heartbeat,
     ask_phone_for_places,
+    ask_phone_to_start,
     end_when_cap_reached,
     read_session_meta,
 )
@@ -258,3 +259,39 @@ def test_a_phone_that_cannot_answer_means_no_places():
 
 def test_the_coach_is_told_to_look_around_instead_of_guessing_places():
     assert "look_around" in INSTRUCTIONS and "不要编地名" in INSTRUCTIONS
+
+
+def test_start_asks_the_athletes_phone():
+    phone = FakeParticipant(json.dumps({"ok": True, "status": "starting"}))
+    room = SimpleNamespace(local_participant=phone)
+    assert asyncio.run(ask_phone_to_start(room, "athlete-1", "cycling"))["ok"] is True
+    [call] = phone.calls
+    assert call["method"] == "coach.start" and json.loads(call["payload"]) == {
+        "activity": "cycling"
+    }
+    room = SimpleNamespace(local_participant=FakeParticipant(error=TimeoutError()))
+    assert asyncio.run(ask_phone_to_start(room, "a", "running"))["ok"] is False
+
+
+def start_tool_agent(started: list[str]) -> CoachAgent:
+    async def start(activity: str) -> dict:
+        started.append(activity)
+        return {"ok": True}
+
+    return CoachAgent(CoachBrain(Athlete(athlete_id="a")), start=start)
+
+
+def test_start_workout_tool_starts_only_when_no_workout_runs():
+    started: list[str] = []
+    agent = start_tool_agent(started)
+    ok = json.loads(asyncio.run(agent.start_workout(None, "walking")))
+    assert ok["ok"] is True and started == ["walking"]
+    assert json.loads(asyncio.run(agent.start_workout(None, "swimming")))["ok"] is False
+    agent.brain.on_frame(MetricsFrame.from_dict(FULL))
+    busy = json.loads(asyncio.run(agent.start_workout(None, "running")))
+    assert busy == {"ok": False, "reason": "a workout is already running"}
+    assert started == ["walking"]
+
+
+def test_the_coach_starts_the_workout_only_when_asked():
+    assert "start_workout" in INSTRUCTIONS and "明确要开始" in INSTRUCTIONS

@@ -32,6 +32,11 @@ def writer_models(env: Mapping[str, str]) -> tuple[str, ...]:
 # RPC the coach calls on the athlete's phone to look around them (spec 7.5).
 PLACES_METHOD = "coach.places"
 
+# RPC the coach calls on the athlete's phone to start a workout on the watch (spec 7.6), and the
+# activities the phone offers (`apple/Shared/WorkoutActivity.swift` wire names).
+START_METHOD = "coach.start"
+STARTABLE_ACTIVITIES = ("running", "walking", "hiking", "cycling", "other")
+
 
 def parse_athlete_id(raw: str) -> str:
     """Normalize an athlete id (a UUID generated on the phone). Raises ValueError."""

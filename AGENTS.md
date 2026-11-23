@@ -30,7 +30,7 @@ coach-w 是一个实时语音运动教练：Apple Watch 采集运动指标，iPh
 - `apple/iOS/Voice/OfflineVoiceRecorder.swift`：断网时录麦克风，连回后在手机上转写并发给教练（`lk.chat`）
 - `apple/iOS/Records/`：`WorkoutRecorder`（跟踪当前运动、本地兜底 cue、续接摘要、结束时存记录）、`WorkoutStore`（本机 JSON 记录）、`RecordsView`（记录列表、分段柱状图与教练对话时间线详情）；接线在 `CoachWApp.swift`
 - `apple/iOS/Settings/`：`AppSettings.swift`（`athlete_id`、邀请码钥匙串、token API 地址）与 `SettingsView.swift`（暗色分组设置页、服务器校验状态、邀请码显隐切换与运动者 ID 复制）
-- `apple/CoachKit`：`MetricsFrame`、`CoachCue`、`CoachResume`（线协议）、`FrameBuilder`（合并读数、节流、推算步频、GPS）、`FrameStats`（收端统计）、`ServerAddress`（设置里的服务器地址校验）、`WorkoutTracker`（手机端跟踪运动：公里时刻、均值）、`LocalCoach`（断网兜底规则）、`ReconnectPolicy`、`CoachPresence`（教练随运动接通、空闲挂断、时长上限后续上，spec 7.6）、`WorkoutRecord`
+- `apple/CoachKit`：`MetricsFrame`、`CoachCue`、`CoachResume`（线协议）、`FrameBuilder`（合并读数、节流、推算步频、GPS）、`FrameStats`（收端统计）、`ServerAddress`（设置里的服务器地址校验）、`WorkoutTracker`（手机端跟踪运动：公里时刻、均值）、`LocalCoach`（断网兜底规则）、`ReconnectPolicy`、`CoachPresence`（教练随运动接通、空闲挂断、时长上限后续上，spec 7.6）、`CoachStatus`（手机告诉手表教练在不在）、`WorkoutRecord`
 - `server/src/coachw/session.py`：token API 与 Agent 的约定（Agent 名 `coach-w`、签进 token 的 `SessionMeta`）
 - `server/src/coachw/agent/transcript.py`：每个会话的对话全文（JSONL，`COACHW_TRANSCRIPT_DIR`，生产在 docker 卷 `transcripts`）；看用户语音里提的反馈先查这里。新教练从这里取运动者最近的对话接着聊（`recent_conversation`）
 - `server/src/coachw/agent/worker.py`：Agent 入口、`AthleteInbox`（订阅 `coach.metrics` / `coach.resume`，身份确认前暂存）、续接开场白、下发 `coach.cue`、会话时长上限；`coach.py`：系统提示词、工具、档案工具包装、状态摘要；`loop.py`：每秒教练循环（cue → `generate_reply(user_input=...)`、紧急打断、状态摘要）

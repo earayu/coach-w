@@ -85,7 +85,9 @@ def test_rejects_missing_required():
 def test_fixtures_are_named_after_their_message():
     names = [p.name for p in FIXTURES.glob("*.json")]
     assert names
-    assert all(n.startswith(("metrics_frame_", "coach_cue_", "coach_resume_")) for n in names)
+    # coach_status_ is phone -> watch only (spec 6.3): the server never parses it
+    prefixes = ("metrics_frame_", "coach_cue_", "coach_resume_", "coach_status_")
+    assert all(n.startswith(prefixes) for n in names)
 
 
 def test_cue_full_fixture():

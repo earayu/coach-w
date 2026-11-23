@@ -130,6 +130,7 @@ struct ContentView: View {
                 lastError: mirror.lastError,
                 isStartingWatch: mirror.isStartingWatch,
                 isWatchSlowToStart: mirror.isWatchSlowToStart,
+                startingActivity: mirror.startingActivity,
                 coachJoinsWorkouts: settings.wantsCoachForWorkout,
                 onStartWatch: { chosen in
                     Task {

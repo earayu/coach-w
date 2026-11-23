@@ -189,6 +189,7 @@ M3 的工具：
 | `get_progress` | 阶段、用时、距离、最近 5 个分段（用时和分段平均值）、目标与剩余距离、静音剩余时间 |
 | `set_quiet(minutes)` | 静音 0–30 分钟（0 取消），期间只放行紧急 cue |
 | `end_workout_summary` | 总用时、距离、档案关心的各指标全程平均值及口语读法、能量、全部分段、最快 / 最慢分段、各类提醒次数 |
+| `start_workout(activity)` | 运动前用户说"开始吧"时，经 RPC `coach.start` 让手机在手表上开始（7.6）；已有运动在进行、运动类型不认识或手机没回应时返回 `ok: false` |
 | `adjust_target_pace(pace_min, pace_sec, goal_km?)`（跑步档案） | 设置或取消目标配速（2'30"–15'00"），可同时设置目标距离（0–100 公里） |
 
 档案工具在收到第一帧、知道运动类型后才注册到会话（`Agent.update_tools`），同时把档案的提示词片段追加到系统提示词（`update_instructions`）。
@@ -372,8 +373,22 @@ CoachLoop（每秒一次）─▶ CoachBrain.tick ─▶ EventEngine + Director 
 - 服务端在放行一条带震动的紧急 / 纠正 / 节点 cue 时，经 LiveKit data channel（topic `coach.cue`，可靠传输，只发给房间里的运动者）下发；陪伴 cue 不发。语音照常由模型说。
 - 必填：`v`、`id`、`ts`、`expires_at`、`priority`。`ts`、`expires_at` 是服务端的 Unix 毫秒时间。`priority`：`emergency` / `correction` / `milestone` / `companion`。
 - 可缺省：`kind`（事件类型，如 `hr_emergency`、`split:3`，只用于日志和展示）、`haptic`（`notification` / `direction_up` / `direction_down` / `success` / `failure` / `retry` / `start` / `stop` / `click`，对应 `WKHapticType`；不认识的值按 `notification` 处理）、`text`（手表上显示的短文案，不含指标值）。
-- iPhone 收到后到期的直接丢弃，未到期的经镜像会话 `sendToRemoteWorkoutSession` 原样转给手表；手表再检查一次是否过期，然后震动并在表盘顶部显示文案，最多 4 秒且不超过 `expires_at`。iPhone → 手表这条通道目前只传 cue。
+- iPhone 收到后到期的直接丢弃，未到期的经镜像会话 `sendToRemoteWorkoutSession` 原样转给手表；手表再检查一次是否过期，然后震动并在表盘顶部显示文案，最多 4 秒且不超过 `expires_at`。iPhone → 手表这条通道传 cue 和下面的 `coach.status`，手表按字段区分（cue 必有 `id` / `priority`，status 必有 `coach_status`），都解不出的丢弃。
 - 手机和手表用自己的系统时间判断过期，依赖三端时钟大致同步（NTP），偏差会直接加减在剩余时间上。
+
+`coach.status`（iPhone → 手表，COCH-21）：教练此刻在不在，手表运动页的小圆点用（7.6）。只走镜像会话，服务端不收不发，所以只有 Swift 端解析（`CoachKit.CoachStatus`）；规范样例 `coach_status_v1_full.json`。
+
+```json
+{
+  "v": 1,
+  "ts": 1763726400000,
+  "expires_at": 1763726490000,
+  "coach_status": "online"
+}
+```
+
+- 全部必填。`ts`、`expires_at` 是手机的 Unix 毫秒时间，有效期 90 秒。`coach_status`：`online`（已接通）/ `connecting`（拿 token、连房间、重连中）/ `offline`（链路断了，手机本机播报，7.4）/ `off`（没接通、已挂断或被拒）；不认识的值按 `off` 处理。
+- 手机在语音状态每次变化、每次镜像会话开始时发，另外每 15 秒补发一次；手表只采纳 `ts` 更新的一条，过期后不再显示（说明手机已经好一会儿没消息了）。
 
 `coach.resume`（iPhone → 服务端，M4）：语音会话（重新）加入一个已经在进行的运动时，手机把它从手表帧里统计的运动摘要发给新会话，让教练接着这次运动继续，而不是从头开始（7.4、8.1）。
 
@@ -438,7 +453,7 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 - 连接竞态：`start()` 每次带一个代数，`stop()` 让代数加一；拿 token、连房间、开麦这几步之间发现代数变了就放弃并断开刚连上的房间，所以"连接中"点结束语音后不会再连上开麦。`RoomDelegate` 回调只处理当前房间的事件。
 - 设置：邀请码和服务器地址在判断"已配置"、发请求、持久化时都去掉首尾空白和换行，设置页关闭时内存里的值也一并裁剪；服务器地址只接受 `http` / `https`（`CoachKit.ServerAddress`）。"静音"按钮只在已连接时可用。
 - 开发构建（DEBUG）可在启动时用环境变量配置：`COACHW_API_BASE_URL`、`COACHW_INVITE_CODE`（写入设置并保存），`COACHW_AUTOCONNECT=1` 启动后自动连接，方便用 `xcrun devicectl device process launch --environment-variables` 免手输测试。正式构建不读这些变量。
-- 界面（`apple/Shared/DesignSystem.swift`，维护者 2026-11-23 要求：尽量简洁，参照 Apple Watch「体能训练」和 Apple 原生风格）：纯黑底、系统深色配色、圆体数字，一种强调色（健身圆环绿），每类指标一种颜色（时长黄、心率粉、配速蓝、距离绿）；不用渐变、发光、品牌徽标和自绘卡片，列表和设置用原生 `List` / `Form`。未运动态（`LobbyView`）是原生分组列表：教练状态一行（圆点 + 文字；未接通时是「和教练聊聊」，接通后是静音 / 断开）、"开始"的运动列表（点一行接通教练并在手表上开始，该行显示进度，7.6）、"上次运动"一行；左上角"记录"、右上角"设置"（未配置时带橙点）。运动中（`WorkoutDashboardView`）按体能训练 App 排版：时长、心率（含区间）、配速 / 时速、距离四行大号数字，下面三列小字只列出本次运动有值的其他指标，一行灰色小字给出数据流统计（6.2），底部"结束""暂停 / 继续"两个圆形按钮（结束要确认）；语音状态在右上角，麦克风按钮轻点静音、长按可断开。记录（`RecordsView`）是原生列表（左滑删除），详情按健身 App 的"体能训练详情"排版：运动详情两列网格、每公里分段、教练对话。设置（`SettingsView`）是原生表单。watchOS（`apple/Watch/ContentView.swift`）：开始页是体能训练 App 式的运动磁贴；运动中左右分页，默认是指标页（时长、心率、配速 / 时速、距离），右滑到控制页（结束、暂停 / 继续），`coach.cue` 在顶部横幅显示。DEBUG 构建支持 `COACHW_UI_PREVIEW` 环境变量在模拟器预览各页面，正式构建不生效。
+- 界面（`apple/Shared/DesignSystem.swift`，维护者 2026-11-23 要求：尽量简洁，参照 Apple Watch「体能训练」和 Apple 原生风格）：纯黑底、系统深色配色、圆体数字，一种强调色（健身圆环绿），每类指标一种颜色（时长黄、心率粉、配速蓝、距离绿）；不用渐变、发光、品牌徽标和自绘卡片，列表和设置用原生 `List` / `Form`。未运动态（`LobbyView`）是原生分组列表：教练状态一行（圆点 + 文字；未接通时是「和教练聊聊」，接通后是静音 / 断开）、"开始"的运动列表（点一行接通教练并在手表上开始，该行显示进度，7.6）、"上次运动"一行；左上角"记录"、右上角"设置"（未配置时带橙点）。运动中（`WorkoutDashboardView`）按体能训练 App 排版：时长、心率（含区间）、配速 / 时速、距离四行大号数字，下面三列小字只列出本次运动有值的其他指标，一行灰色小字给出数据流统计（6.2），底部"结束""暂停 / 继续"两个圆形按钮（结束要确认）；语音状态在右上角，麦克风按钮轻点静音、长按可断开。记录（`RecordsView`）是原生列表（左滑删除），详情按健身 App 的"体能训练详情"排版：运动详情两列网格、每公里分段、教练对话。设置（`SettingsView`）是原生表单。watchOS（`apple/Watch/ContentView.swift`）：开始页是体能训练 App 式的运动磁贴；运动中左右分页，默认是指标页（时长、心率、配速 / 时速、距离；标题旁是教练在线 / 离线的小圆点，7.6），右滑到控制页（结束、暂停 / 继续），`coach.cue` 在顶部横幅显示。DEBUG 构建支持 `COACHW_UI_PREVIEW` 环境变量在模拟器预览各页面，正式构建不生效。
 - 教练说过的话（M4）：livekit-agents 把双方的转写以文字流发到 `lk.transcription`；`VoiceSession` 注册这个 topic，发送者不是自己（用户自己的话以用户身份发出）的整段文字交给 `WorkoutRecorder` 记下。
 - LiveKit 的 WebRTC 二进制包约 690 MB，从 GitHub Releases 下载，国内网络下 xcodebuild 自带的下载会超时。可先用 `curl -C -` 断点续传，再按 SwiftPM 的命名放进 `~/Library/Caches/org.swift.swiftpm/artifacts/`（见 `docs/setup.md`）。
 
@@ -482,15 +497,17 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 | 阶段 | 怎么进入 | 教练 |
 |---|---|---|
 | 未接通 | 默认 | 不占语音分钟 |
-| 运动前 | 首页点「和教练聊聊」 | 【运动状态】写"还没开始运动"，开场白问今天怎么练、不说数字；用户说准备好了，教练提醒他在手表上点开始 |
+| 运动前 | 首页点「和教练聊聊」 | 【运动状态】写"还没开始运动"，开场白问今天怎么练、不说数字；用户说"开始吧"，教练调用 `start_workout` 在手表上开始 |
 | 运动中 | 在手机上点一种运动，或者在手表上开始 | 手机上点运动时先接通教练再唤起手表，教练的开场白正好盖住唤起手表的等待（COCH-17）；在手表上开始时，手机在镜像会话开始时（`MirrorReceiver.onSessionStarted`）自动接通。会话在运动开始 60 秒内接通时（`JOINED_AT_START_S`），服务端不采纳 `coach.resume`，照常播开始节点，而不是"我回来了，已用时 3 秒" |
 | 运动后 | 运动结束 | 跑后总结、复盘（4.8） |
 
 - **自动接通**：设置里的「运动开始时接通教练」，默认开（`AppSettings.coachJoinsWorkouts`）。关掉后只由手表记录和震动，需要时点「和教练聊聊」。没配置邀请码和服务器时不接通。
 - **自动挂断**（`CoachKit.CoachPresence`，手机每 15 秒检查一次）：运动中从不挂断；运动结束后双方 2 分钟没说话（按 `lk.transcription` 的整句计）就挂断，最长 10 分钟；运动前接通、10 分钟没开始运动也没人说话就挂断。挂断后手机本机播报一句"教练先下线了"。网络重连不重置运动后的计时。
 - **会话到时长上限时续上**：单次会话上限（`COACHW_SESSION_MAX_MINUTES`，默认 60 分钟）到了，Agent 删除房间，手机原先把它当成服务端有意结束、不再重连，长于一小时的运动后半程就没有教练。现在运动还在进行、这个会话已经接通超过 2 分钟（更短的说明是被移出或身份重复，不是时长上限，重连会循环）时，手机 3 秒后重新申请会话，新教练从 `coach.resume` 和对话续接接着陪（7.4）。告别语改成"换一下线路，几秒后自动回来"。当日分钟用完时 token API 返回 429，不再重试。
+- **说"开始吧"就开始**：工具 `start_workout(activity)`（`activity` 为手机可选的 `running` / `walking` / `hiking` / `cycling` / `other`，`session.STARTABLE_ACTIVITIES`）。只在用户明确要开始时调用，看不出运动类型先问。服务端发现手表正在记录（有 10 秒内的非结束帧）时直接拒绝；否则经 LiveKit RPC `coach.start`（`{"activity": "running"}`，5 秒超时）请手机调用 `MirrorReceiver.startOnWatch`，手机不等手表响应就回 `{"ok": true, "status": "waking the watch"}`，首页对应那一行显示进度。失败时教练让用户在手表上点开始。教练只是替用户按了"开始"，开始的时机仍由用户决定。
+- **手表上的教练圆点**：手表运动页标题旁一个小圆点，绿色在线、橙色连接中或离线、灰色没接通；手机超过 90 秒没发 `coach.status`（6.3）就不显示。
 - 运动前定下的目标：提示词让教练记住，开始后再调用 `adjust_target_pace` 设上（档案工具要等第一帧才注册）。模型是否照做待真机验证。
-- **待真机验证**：从手表开始、手机锁屏在口袋里时，iOS 是否允许被镜像会话在后台拉起的 App 新开麦克风、接通 LiveKit。不允许时的退路：手机发通知"点一下接通教练"。
+- **待真机验证**：教练在手机锁屏时调用 `start_workout`，后台的 `startWatchApp` 能否拉起手表。从手表开始、手机锁屏在口袋里时，iOS 是否允许被镜像会话在后台拉起的 App 新开麦克风、接通 LiveKit。不允许时的退路：手机发通知"点一下接通教练"。
 
 ## 8. 整体架构
 

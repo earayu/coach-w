@@ -240,6 +240,15 @@ class CoachBrain:
         phase = self.director.current_phase(self.state, self.targets)
         return phase.label if phase else "准备"
 
+    def workout_in_progress(self) -> bool:
+        """A workout the watch is recording now: running or paused, with fresh frames."""
+        latest = self.state.latest
+        return (
+            latest is not None
+            and latest.state is not WorkoutState.ENDED
+            and not self.state.is_stale()
+        )
+
     def status_summary(self) -> str | None:
         """Context for the model, injected without a reply. It carries the watch's live readings
         as they are now; the loop replaces it the moment the athlete starts speaking, so a

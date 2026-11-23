@@ -45,6 +45,7 @@ from coachw.session import (
     AGENT_NAME,
     HEARTBEAT_METHOD,
     PLACES_METHOD,
+    START_METHOD,
     SessionMeta,
     writer_models,
 )
@@ -210,22 +211,38 @@ def cue_writer_for(meta: SessionMeta, brain: CoachBrain, agent: CoachAgent) -> C
 
 # The phone looks the place up with Apple Maps; that takes a few seconds on mobile data.
 PLACES_TIMEOUT_S = 10.0
+# The phone only kicks off the watch start and answers; the watch itself may take longer.
+START_TIMEOUT_S = 5.0
 
 
-async def ask_phone_for_places(room: rtc.Room, identity: str, query: str) -> dict[str, Any]:
-    """What is around the athlete, from their phone (spec 7.5). Never raises."""
+async def ask_phone(
+    room: rtc.Room, identity: str, method: str, payload: dict[str, Any], timeout: float
+) -> dict[str, Any] | None:
+    """The phone's JSON answer to an RPC, or None when it did not answer. Never raises."""
     try:
         raw = await room.local_participant.perform_rpc(
             destination_identity=identity,
-            method=PLACES_METHOD,
-            payload=json.dumps({"query": query}, ensure_ascii=False),
-            response_timeout=PLACES_TIMEOUT_S,
+            method=method,
+            payload=json.dumps(payload, ensure_ascii=False),
+            response_timeout=timeout,
         )
         result = json.loads(raw)
-        return result if isinstance(result, dict) else {"available": False, "reason": "bad reply"}
+        return result if isinstance(result, dict) else None
     except Exception as e:  # an older app, no network, a slow lookup
-        logger.info("look_around failed: %s", type(e).__name__)
-        return {"available": False, "reason": "phone did not answer"}
+        logger.info("%s failed: %s", method, type(e).__name__)
+        return None
+
+
+async def ask_phone_for_places(room: rtc.Room, identity: str, query: str) -> dict[str, Any]:
+    """What is around the athlete, from their phone (spec 7.5)."""
+    result = await ask_phone(room, identity, PLACES_METHOD, {"query": query}, PLACES_TIMEOUT_S)
+    return result or {"available": False, "reason": "phone did not answer"}
+
+
+async def ask_phone_to_start(room: rtc.Room, identity: str, activity: str) -> dict[str, Any]:
+    """Has the phone start a workout on the watch (spec 7.6)."""
+    result = await ask_phone(room, identity, START_METHOD, {"activity": activity}, START_TIMEOUT_S)
+    return result or {"ok": False, "reason": "phone did not answer"}
 
 
 @server.rtc_session(agent_name=AGENT_NAME)
@@ -262,6 +279,7 @@ async def entrypoint(ctx: JobContext) -> None:
         keeps_transcript=directory is not None,
         history=history,
         places=lambda query: ask_phone_for_places(ctx.room, participant.identity, query),
+        start=lambda activity: ask_phone_to_start(ctx.room, participant.identity, activity),
     )
     turns = TurnLog()
     turns.attach(session)

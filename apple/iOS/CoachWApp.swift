@@ -20,9 +20,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let mirror = MirrorReceiver.shared, voice = VoiceSession.shared, recorder = WorkoutRecorder.shared
         let settings = AppSettings.shared
         mirror.install()
+        // the coach dot on the watch (spec 7.6): on every change, at each workout start, and on
+        // each presence check so it never goes stale on the wrist
+        let showCoachOnWatch: @MainActor () -> Void = {
+            guard mirror.isActive else { return }
+            mirror.sendToWatch(CoachStatus(voice.coachState, at: .now))
+        }
+        voice.onStatusChanged = showCoachOnWatch
         mirror.onSessionStarted = { [weak self] activity in
             recorder.begin(activity)
             self?.presence.workoutStarted()
+            showCoachOnWatch()
             // also when the workout was started on the watch, with the phone in a pocket
             guard settings.wantsCoachForWorkout, !voice.isActive else { return }
             diag("voice", "workout started: connecting the coach")
@@ -49,6 +57,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             self?.presence.talked(at: .now)
         }
         voice.resumeProvider = { recorder.resume() }
+        // the coach's `start_workout` tool (spec 7.6): kick the start off and answer right away,
+        // the watch can take a while to wake up (COCH-17)
+        voice.startProvider = { wire in
+            guard let activity = WorkoutActivity(rawValue: wire) else { return #"{"ok":false,"reason":"unknown activity"}"# }
+            if mirror.isActive { return #"{"ok":false,"reason":"a workout is already running"}"# }
+            if mirror.isStartingWatch { return #"{"ok":true,"status":"already waking the watch"}"# }
+            diag("phone", "coach asked to start \(wire) on the watch")
+            Task { await mirror.startOnWatch(activity) }
+            return #"{"ok":true,"status":"waking the watch"}"#
+        }
         let places = PlaceFinder.shared
         places.watchFix = { mirror.latest?.location }
         voice.placesProvider = { await places.lookAround(query: $0) }
@@ -90,6 +108,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         presenceCheck = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.presenceInterval)
+                showCoachOnWatch()
                 guard let self, voice.isActive, presence.shouldHangUp(at: .now) else { continue }
                 diag("voice", "hanging up, nobody spoke for a while: \(presence.stage)")
                 await voice.stop()

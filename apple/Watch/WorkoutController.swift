@@ -24,6 +24,8 @@ final class WorkoutController: NSObject {
     private var mirrorError: String?
     /// The coach cue on screen, if any (spec 4.1: key cues also buzz the watch).
     private(set) var cue: CoachCue?
+    /// Whether the voice coach is with the athlete, as the phone last said (spec 7.6).
+    private(set) var coachStatus: CoachStatus?
 
     var state: HKWorkoutSessionState {
         switch machine.phase {
@@ -369,6 +371,7 @@ final class WorkoutController: NSObject {
         latest = nil
         cueDismissal?.cancel()
         cue = nil
+        coachStatus = nil
         sendFailures = 0
         mirrorError = nil
     }
@@ -448,12 +451,17 @@ extension WorkoutController: HKWorkoutSessionDelegate {
     nonisolated func workoutSession(
         _ workoutSession: HKWorkoutSession, didReceiveDataFromRemoteWorkoutSession data: [Data]
     ) {
-        // The iPhone sends only coach cues on this channel (spec 6.3).
+        // The iPhone sends coach cues and the coach's status on this channel (spec 6.3).
         let cues = data.compactMap { try? CoachCue.decode($0) }
-        if cues.count < data.count { log.error("dropping \(data.count - cues.count) undecodable cue(s)") }
+        let statuses = data.compactMap { try? CoachStatus.decode($0) }
+        let unknown = data.count - cues.count - statuses.count
+        if unknown > 0 { log.error("dropping \(unknown) undecodable message(s)") }
         Task { @MainActor in
             guard self.session === workoutSession else { return }
             cues.forEach(self.present)
+            if let status = statuses.max(by: { $0.ts < $1.ts }), status.ts >= self.coachStatus?.ts ?? 0 {
+                self.coachStatus = status
+            }
         }
     }
 }

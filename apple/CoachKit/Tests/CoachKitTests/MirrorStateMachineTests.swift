@@ -11,6 +11,7 @@ import Testing
     let sg = sm.startGeneration
     #expect(sm.phase == .launchingWatch(activity: "running", slow: false))
     #expect(sm.isStartingWatch && !sm.isWatchSlowToStart && !sm.isWorkoutVisible)
+    #expect(sm.startingActivity == "running")
     #expect(startEffects == [
         .scheduleTimer(.slowStart, generation: sg),
         .scheduleTimer(.attachTimeout, generation: sg),
@@ -26,6 +27,7 @@ import Testing
     let startedEffects = sm.handle(.watchAppStarted(generation: sg))
     #expect(sm.phase == .awaitingMirror(activity: "running"))
     #expect(sm.isWorkoutVisible && !sm.isActive && !sm.isWatchSlowToStart && sm.awaitingActivity == "running")
+    #expect(sm.startingActivity == "running")
     #expect(startedEffects == [.cancelTimer(.slowStart)])
 
     // Cancelling after watch already took the start is ignored.
@@ -35,6 +37,7 @@ import Testing
     let attachEffects = sm.handle(.sessionAttached(activity: "running", startedAt: t0, state: .running))
     let g1 = sm.sessionGeneration
     #expect(sm.isActive && sm.isRunning && !sm.isStartingWatch && sm.awaitingActivity == nil)
+    #expect(sm.startingActivity == nil)
     #expect(attachEffects == [
         .cancelTimer(.slowStart),
         .cancelTimer(.attachTimeout),

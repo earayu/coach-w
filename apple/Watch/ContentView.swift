@@ -43,6 +43,7 @@ struct ContentView: View {
                 isFinishing: workout.isFinishing,
                 lastError: workout.lastError,
                 cue: workout.cue,
+                coachStatus: workout.coachStatus,
                 onPause: { workout.pause() },
                 onResume: { workout.resume() },
                 onEnd: { workout.end() }
@@ -134,6 +135,40 @@ private struct StartView: View {
     }
 }
 
+/// Whether the voice coach is with the athlete (spec 7.6): green online, orange connecting or
+/// offline, grey no coach. Hidden while the phone has said nothing recent.
+private struct CoachDot: View {
+    let status: CoachStatus?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 5)) { context in
+            if let status, !status.isExpired(at: context.date) {
+                Circle()
+                    .fill(color(status.coachStatus))
+                    .frame(width: 6, height: 6)
+                    .accessibilityLabel(label(status.coachStatus))
+            }
+        }
+    }
+
+    private func color(_ state: CoachStatus.State) -> Color {
+        switch state {
+        case .online: Theme.accent
+        case .connecting, .offline: Theme.orange
+        case .off: Theme.tertiaryText
+        }
+    }
+
+    private func label(_ state: CoachStatus.State) -> String {
+        switch state {
+        case .online: "教练在线"
+        case .connecting: "教练连接中"
+        case .offline: "教练离线"
+        case .off: "教练未接通"
+        }
+    }
+}
+
 /// During a workout, as on the Workout app: swipe right for the controls, metrics in the middle.
 private struct ActiveWorkoutView: View {
     let activity: WorkoutActivity
@@ -142,6 +177,7 @@ private struct ActiveWorkoutView: View {
     let isFinishing: Bool
     let lastError: String?
     let cue: CoachCue?
+    var coachStatus: CoachStatus? = nil
     let onPause: () -> Void
     let onResume: () -> Void
     let onEnd: () -> Void
@@ -178,6 +214,7 @@ private struct ActiveWorkoutView: View {
                     .foregroundStyle(Theme.accent)
                 Text(isFinishing ? "正在保存" : paused ? "已暂停" : activity.title)
                     .foregroundStyle(paused ? Theme.yellow : Theme.secondaryText)
+                CoachDot(status: coachStatus)
             }
             .font(.system(size: 13, weight: .semibold, design: .rounded))
 

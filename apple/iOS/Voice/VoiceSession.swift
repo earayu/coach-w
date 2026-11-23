@@ -68,6 +68,15 @@ final class VoiceSession: NSObject {
     var isActive: Bool { machine.isActive }
     /// The server ended the session on purpose (length cap, removed), as opposed to the user.
     var endedByServer: Bool { machine.phase == .failed(.sessionEndedByServer) }
+    /// What the watch shows of the coach (spec 7.6).
+    var coachState: CoachStatus.State {
+        switch status {
+        case .connected: .online
+        case .requestingToken, .connecting, .reconnecting: .connecting
+        case .offline: .offline
+        case .idle, .failed: .off
+        }
+    }
     /// The user wants the coach but cannot hear it right now: the phone speaks key cues itself.
     var needsLocalFallback: Bool { machine.needsLocalFallback }
 
@@ -81,6 +90,8 @@ final class VoiceSession: NSObject {
     @ObservationIgnored var onLinkLost: (@MainActor () -> Void)?
     /// Called each time a session is connected and its microphone is live.
     @ObservationIgnored var onConnected: (@MainActor () -> Void)?
+    /// Called whenever `status` changes.
+    @ObservationIgnored var onStatusChanged: (@MainActor () -> Void)?
     /// Called when the voice session ends for good: the user stopped it or the server said no.
     @ObservationIgnored var onStopped: (@MainActor () -> Void)?
     /// The workout so far, for a session that joins mid-workout; nil when there is none.
@@ -88,8 +99,13 @@ final class VoiceSession: NSObject {
     /// Answers the coach's `look_around` tool: query in, JSON out (spec 7.5).
     @ObservationIgnored var placesProvider: (@MainActor (String) async -> String)?
 
+    /// Answers the coach's `start_workout` tool: activity wire name in, JSON out (spec 7.6).
+    @ObservationIgnored var startProvider: (@MainActor (String) -> String)?
+
     /// RPC the coach calls to look around the athlete (`server/src/coachw/session.py`).
     static let placesMethod = "coach.places"
+    /// RPC the coach calls to start a workout on the watch (`server/src/coachw/session.py`).
+    static let startMethod = "coach.start"
     /// Text the agent takes as the user's words (livekit-agents' chat input).
     static let chatTopic = "lk.chat"
 
@@ -185,6 +201,7 @@ final class VoiceSession: NSObject {
         let after = String(describing: status)
         if before != after { diag("voice", "\(before) -> \(after)") }
         for effect in effects { execute(effect) }
+        if before != after { onStatusChanged?() }
     }
 
     private func execute(_ effect: VoiceStateMachine.Effect) {
@@ -271,6 +288,7 @@ final class VoiceSession: NSObject {
                 }
                 await self.listenForTranscripts(in: room)
                 await self.answerPlaces(in: room)
+                await self.answerStart(in: room)
                 try await room.localParticipant.setMicrophone(enabled: micEnabled)
                 guard self.machine.generation == gen else {
                     await room.disconnect()
@@ -415,6 +433,20 @@ final class VoiceSession: NSObject {
             }
         } catch {
             log.error("places RPC unavailable: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func answerStart(in room: Room) async {
+        do {
+            try await room.registerRpcMethod(Self.startMethod) { [weak self] data in
+                let activity = (try? JSONSerialization.jsonObject(with: Data(data.payload.utf8)) as? [String: Any])?["activity"] as? String
+                return await MainActor.run {
+                    guard let start = self?.startProvider else { return #"{"ok":false,"reason":"not supported"}"# }
+                    return start(activity ?? "")
+                }
+            }
+        } catch {
+            log.error("start RPC unavailable: \(error.localizedDescription, privacy: .public)")
         }
     }
 

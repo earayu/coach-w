@@ -10,6 +10,8 @@ struct LobbyView: View {
     let lastError: String?
     var isStartingWatch = false
     var isWatchSlowToStart = false
+    /// What the watch is being asked to start, from a tap here or from the coach (spec 7.6).
+    var startingActivity: WorkoutActivity?
     /// Starting a workout also connects the coach (spec 7.6).
     var coachJoinsWorkouts = true
     let onStartWatch: (WorkoutActivity) -> Void
@@ -97,7 +99,7 @@ struct LobbyView: View {
     }
 
     private func activityRow(_ activity: WorkoutActivity) -> some View {
-        let starting = isStartingWatch && activity == selectedActivity
+        let starting = isStartingWatch && activity == (startingActivity ?? selectedActivity)
         return Button {
             diag("phone-ui", "start on watch tapped: \(activity.wireName)")
             selectedActivity = activity

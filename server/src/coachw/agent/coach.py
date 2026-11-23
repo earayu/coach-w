@@ -10,6 +10,7 @@ from livekit.agents import Agent, RunContext, function_tool, llm
 
 from coachw.coach.brain import QUIET_MAX_MIN, CoachBrain
 from coachw.profiles.base import ProfileTool
+from coachw.session import STARTABLE_ACTIVITIES
 
 logger = logging.getLogger("coachw.agent")
 
@@ -40,7 +41,7 @@ INSTRUCTIONS = """\
 
 运动开始前：
 - 【运动状态】写着还没开始运动时，用户还没在手表上开始，你也没有任何运动数据。可以聊今天练什么、练多久、强度怎么定、怎么热身、装备和天气；不要说心率、配速这些当前数据。
-- 用户说准备好了、想开始时，告诉他抬腕在手表上点开始（或者在手机上点一下运动），开始后你就能看到手表数据，不用他再做别的。
+- 用户说"开始吧""开跑"这类明确要开始的话时，调用 start_workout 在他的手表上开始（看不出是什么运动就先问一句）。调用失败时，告诉他抬腕在手表上点开始。开始后你就能看到手表数据，不用他再做别的。
 - 用户在运动前说了今天的目标配速或距离，记住它；运动开始后（收到开始的【教练提示】之后），有 adjust_target_pace 工具时调用它把目标设上。
 
 运动结束后：
@@ -157,6 +158,8 @@ def profile_tool(brain: CoachBrain, spec: ProfileTool) -> llm.RawFunctionTool:
 
 # Asks the athlete's phone what is around them (`coach.places`, spec 7.5); returns its JSON.
 PlaceLookup = Callable[[str], Awaitable[dict[str, Any]]]
+# Asks the athlete's phone to start a workout on the watch (`coach.start`, spec 7.6).
+WorkoutStarter = Callable[[str], Awaitable[dict[str, Any]]]
 
 
 class CoachAgent(Agent):
@@ -166,11 +169,13 @@ class CoachAgent(Agent):
         keeps_transcript: bool = False,
         history: Sequence[tuple[str, str]] = (),
         places: PlaceLookup | None = None,
+        start: WorkoutStarter | None = None,
     ) -> None:
         self._base_instructions = instructions(keeps_transcript, history)
         super().__init__(instructions=self._base_instructions)
         self.brain = brain
         self._places = places
+        self._start = start
         self._base_tools = list(self.tools)
         self._status_id: str | None = None
         self._status_lock = asyncio.Lock()
@@ -260,4 +265,26 @@ class CoachAgent(Agent):
             result = await self._places(query.strip())
         # places and addresses are location data: log only the outcome (spec 11)
         logger.info("tool look_around called available=%s", result.get("available"))
+        return as_json(result)
+
+    @function_tool()
+    async def start_workout(self, context: RunContext, activity: str = "running") -> str:
+        """在用户的手表上开始一次运动。
+
+        只在用户明确要开始的时候调用（比如"开始吧""开跑""出发"）；运动已经在进行时不要调用。
+        用户没说做什么运动、上下文里也看不出来时，先问他。成功后告诉他手表正在开始，
+        手表没亮的话抬一下手腕；开始后你就能看到手表数据。
+
+        Args:
+            activity: running 跑步、walking 散步、hiking 徒步、cycling 骑行、other 其他运动。
+        """
+        if self.brain.workout_in_progress():
+            result: dict[str, Any] = {"ok": False, "reason": "a workout is already running"}
+        elif activity not in STARTABLE_ACTIVITIES:
+            result = {"ok": False, "reason": f"unknown activity, use one of {STARTABLE_ACTIVITIES}"}
+        elif self._start is None:
+            result = {"ok": False, "reason": "phone not connected"}
+        else:
+            result = await self._start(activity)
+        logger.info("tool start_workout called ok=%s", result.get("ok"))
         return as_json(result)
