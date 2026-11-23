@@ -194,6 +194,7 @@ final class MirrorReceiver: NSObject {
         let continuing = isActive && sessionStart != nil && mirrored.startDate == sessionStart
         diag("phone", "mirrored session attached, state \(mirrored.state.label), continuing \(continuing)")
         stopWaiting()
+        session?.delegate = nil
         session = mirrored
         mirrored.delegate = self
         state = mirrored.state
@@ -310,7 +311,10 @@ extension MirrorReceiver: HKWorkoutSessionDelegate {
             frame.phoneTs = receivedAt
             return frame
         }
-        Task { @MainActor in self.receive(frames) }
+        Task { @MainActor in
+            guard self.session === workoutSession else { return }
+            self.receive(frames)
+        }
     }
 }
 

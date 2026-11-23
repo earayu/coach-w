@@ -233,8 +233,10 @@ final class VoiceSession: NSObject {
         } catch {
             guard attempt == generation else { return }
             log.error("voice start failed: \(error.localizedDescription, privacy: .public)")
-            await room?.disconnect()
-            room = nil
+            let failed = self.room
+            self.room = nil
+            await failed?.disconnect()
+            guard attempt == generation else { return }
             if policy.shouldRetry(Self.drop(for: error)) {
                 scheduleRetry()
             } else {
@@ -504,7 +506,7 @@ extension VoiceSession: RoomDelegate {
         guard participant.kind == .agent else { return }
         let id = ObjectIdentifier(room)
         Task { @MainActor in
-            guard self.isCurrent(id), self.status == .connected else { return }
+            guard self.isCurrent(id), self.status == .connected || self.status == .reconnecting else { return }
             log.info("coach left the room; starting a new session")
             self.linkDropped(nil)
             await room.disconnect()

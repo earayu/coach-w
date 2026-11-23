@@ -39,6 +39,7 @@ final class PlaceFinder: NSObject {
 
     /// JSON for the coach: `{available, here?, places: [{name, category?, distance_m, direction}], reason?}`.
     func lookAround(query: String) async -> String {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let here = await currentLocation() else {
             return Self.json(["available": false, "reason": "no location (no GPS fix or no permission)"])
         }
@@ -136,6 +137,16 @@ extension PlaceFinder: CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         log.info("phone location failed: \(error.localizedDescription, privacy: .public)")
         Task { @MainActor in self.resolve(nil) }
+    }
+
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
+        Task { @MainActor in
+            switch status {
+            case .authorizedWhenInUse, .authorizedAlways, .notDetermined: break
+            default: self.resolve(nil)
+            }
+        }
     }
 }
 

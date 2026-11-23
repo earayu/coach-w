@@ -270,7 +270,9 @@ final class WorkoutController: NSObject {
         routeBuilder = nil
         heartbeat?.cancel()
         heartbeat = nil
+        session?.delegate = nil
         session = nil
+        builder?.delegate = nil
         builder = nil
         frames = nil
         activity = nil
@@ -301,6 +303,7 @@ final class WorkoutController: NSObject {
             } catch {
                 log.error("failed to send frame \(frame.seq): \(error.localizedDescription)")
                 await MainActor.run {
+                    guard self.session === session else { return }
                     self.sendFailures += 1
                     // first failure and then one in 30: enough to see a dead link, not a flood
                     if self.sendFailures % 30 == 1 {
@@ -357,14 +360,20 @@ extension WorkoutController: HKWorkoutSessionDelegate {
         from fromState: HKWorkoutSessionState,
         date: Date
     ) {
-        Task { @MainActor in await self.handleStateChange(to: toState, at: date) }
+        Task { @MainActor in
+            guard self.session === workoutSession else { return }
+            await self.handleStateChange(to: toState, at: date)
+        }
     }
 
     nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
         let message = error.localizedDescription
         diag("watch", "workout session failed: \(message)")
         log.error("workout session failed: \(message)")
-        Task { @MainActor in self.lastError = message }
+        Task { @MainActor in
+            guard self.session === workoutSession else { return }
+            self.lastError = message
+        }
     }
 
     nonisolated func workoutSession(
@@ -373,7 +382,10 @@ extension WorkoutController: HKWorkoutSessionDelegate {
         // The iPhone sends only coach cues on this channel (spec 6.3).
         let cues = data.compactMap { try? CoachCue.decode($0) }
         if cues.count < data.count { log.error("dropping \(data.count - cues.count) undecodable cue(s)") }
-        Task { @MainActor in cues.forEach(self.present) }
+        Task { @MainActor in
+            guard self.session === workoutSession else { return }
+            cues.forEach(self.present)
+        }
     }
 }
 
@@ -389,7 +401,10 @@ extension WorkoutController: HKLiveWorkoutBuilderDelegate {
             .compactMap { workoutBuilder.statistics(for: $0) }
             .compactMap { HealthReadings.reading(from: $0, derivesCadenceFromSteps: derivesCadence) }
         let elapsed = workoutBuilder.elapsedTime
-        Task { @MainActor in self.ingest(readings, elapsed: elapsed) }
+        Task { @MainActor in
+            guard self.builder === workoutBuilder else { return }
+            self.ingest(readings, elapsed: elapsed)
+        }
     }
 
     nonisolated func workoutBuilderDidCollectEvent(_ workoutBuilder: HKLiveWorkoutBuilder) {}
