@@ -123,6 +123,7 @@ curl -X POST http://127.0.0.1:8000/v1/session -H 'Content-Type: application/json
 cd server && uv run python tests/e2e/smoke_voice.py --invite dev-invite-code-01
 cd server && uv run python tests/e2e/smoke_coach.py --invite dev-invite-code-01   # M3：主动 cue、coach.cue、打断、工具
 cd server && uv run python tests/e2e/smoke_m4.py --invite dev-invite-code-01      # M4：coach.resume 续接、骑行时速读法
+cd server && uv run python tests/e2e/smoke_start.py --invite dev-invite-code-01   # 运动前：开场白不报数、说"开始吧"调用 start_workout（spec 7.6）
 
 # CoachKit
 cd apple/CoachKit
