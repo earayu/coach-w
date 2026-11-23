@@ -23,6 +23,9 @@ final class MirrorReceiver: NSObject {
     /// The watch took the start request but its data has not arrived yet. Mirroring took about a
     /// minute on device (COCH-15) while the watch was already running: show the workout meanwhile.
     private(set) var awaitingActivity: WorkoutActivity?
+    /// The watch has not taken the start request after `slowStartAfter`. `startWatchApp` only
+    /// returns once the request reached the watch: 59 s on device with the watch asleep (COCH-17).
+    private(set) var isWatchSlowToStart = false
     @ObservationIgnored private var startAttempt = 0
 
     @ObservationIgnored private var session: HKWorkoutSession?
@@ -62,30 +65,58 @@ final class MirrorReceiver: NSObject {
         }
         lastError = nil
         isStartingWatch = true
+        isWatchSlowToStart = false
         startAttempt += 1
         let attempt = startAttempt
         let began = Date()
+        // Both timers run from the tap: `startWatchApp` itself can hang for as long as the watch
+        // is unreachable, and the button must not look dead meanwhile (COCH-13, COCH-17).
+        Task { [weak self] in
+            try? await Task.sleep(for: Self.slowStartAfter)
+            guard let self, attempt == self.startAttempt, self.isStartingWatch, self.awaitingActivity == nil else { return }
+            diag("phone", "watch has not taken the start \(Self.slowStartAfter) after the tap")
+            self.isWatchSlowToStart = true
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: Self.attachTimeout)
+            guard let self, attempt == self.startAttempt, self.isStartingWatch else { return }
+            diag("phone", "no mirrored session \(Self.attachTimeout) after the tap")
+            self.stopWaiting()
+            self.lastError = "手表没有开始运动。请抬腕看看手表上的 coach-w：如果还停在上一场运动，先在手表上结束它；也可以直接在手表上开始。"
+        }
         do {
             try await healthStore.startWatchApp(toHandle: activity.configuration())
             diag("phone", "startWatchApp returned after \(Self.ms(since: began)) ms; waiting for the watch to mirror")
-            if attempt == startAttempt, isStartingWatch { awaitingActivity = activity }
+            if attempt == startAttempt, isStartingWatch {
+                isWatchSlowToStart = false
+                awaitingActivity = activity
+            }
         } catch {
             diag("phone", "startWatchApp failed after \(Self.ms(since: began)) ms: \(Self.describe(error))")
             log.error("startWatchApp failed: \(error.localizedDescription)")
+            guard attempt == startAttempt, isStartingWatch else { return }
+            stopWaiting()
             lastError = "无法从手机启动手表：\(error.localizedDescription)\n请抬腕解锁手表，或直接在手表上打开 coach-w 开始，手机会自动接上。"
-            isStartingWatch = false
-            return
         }
-        // A successful call only means the request reached the watch. If its session never
-        // arrives, the button used to look dead (COCH-13): say so after a while.
-        try? await Task.sleep(for: Self.attachTimeout)
-        guard attempt == startAttempt, isStartingWatch else { return }
-        isStartingWatch = false
-        awaitingActivity = nil
-        diag("phone", "no mirrored session \(Self.attachTimeout) after startWatchApp")
-        lastError = "手表没有开始运动。请抬腕看看手表上的 coach-w：如果还停在上一场运动，先在手表上结束它；也可以直接在手表上开始。"
     }
 
+    /// Stops waiting for a start the watch has not taken yet. The request may still reach the
+    /// watch later; a workout it starts then still mirrors here and shows up.
+    func cancelStart() {
+        guard isStartingWatch, awaitingActivity == nil else { return }
+        diag("phone", "start on watch cancelled while waiting for the watch")
+        startAttempt += 1
+        stopWaiting()
+    }
+
+    private func stopWaiting() {
+        isStartingWatch = false
+        isWatchSlowToStart = false
+        awaitingActivity = nil
+    }
+
+    /// When the phone starts telling the athlete to wake the watch or start on it instead.
+    static let slowStartAfter: Duration = .seconds(4)
     /// How long the phone waits for the watch's session after asking it to start.
     static let attachTimeout: Duration = .seconds(120)
 
@@ -148,8 +179,7 @@ final class MirrorReceiver: NSObject {
 
     private func close(error: String?) {
         diag("phone", "workout closed on the phone\(error == nil ? "" : " with a message")")
-        isStartingWatch = false
-        awaitingActivity = nil
+        stopWaiting()
         session?.delegate = nil
         session = nil
         state = .ended
@@ -163,8 +193,7 @@ final class MirrorReceiver: NSObject {
         // its record and numbers going.
         let continuing = isActive && sessionStart != nil && mirrored.startDate == sessionStart
         diag("phone", "mirrored session attached, state \(mirrored.state.label), continuing \(continuing)")
-        isStartingWatch = false
-        awaitingActivity = nil
+        stopWaiting()
         session = mirrored
         mirrored.delegate = self
         state = mirrored.state

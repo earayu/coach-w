@@ -9,7 +9,9 @@ struct LobbyView: View {
     let lastRecord: WorkoutRecord?
     let lastError: String?
     var isStartingWatch = false
+    var isWatchSlowToStart = false
     let onStartWatch: (WorkoutActivity) -> Void
+    var onCancelStart: () -> Void = {}
     let onConnectVoice: () -> Void
     let onToggleMute: () -> Void
     let onStopVoice: () -> Void
@@ -29,10 +31,19 @@ struct LobbyView: View {
                 ForEach(WorkoutActivity.allCases) { activity in
                     activityRow(activity)
                 }
+                if isStartingWatch {
+                    Button("取消", role: .cancel, action: onCancelStart)
+                        .foregroundStyle(Theme.secondaryText)
+                }
             } header: {
                 Text("在手表上开始")
             } footer: {
-                if let lastError {
+                if isStartingWatch {
+                    Text(isWatchSlowToStart
+                        ? "手表还没响应。请抬腕点亮手表；仍没反应就直接在手表上打开 coach-w 点「开始」，手机会自动接上。"
+                        : "正在唤起手表上的 coach-w…")
+                        .foregroundStyle(isWatchSlowToStart ? Theme.orange : Theme.secondaryText)
+                } else if let lastError {
                     Text(lastError).foregroundStyle(Theme.red)
                 } else {
                     Text("运动由 Apple Watch 记录，iPhone 显示数据并连接语音教练。")
