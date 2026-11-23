@@ -46,7 +46,7 @@ SILENCE = 300
 # distinctive values so a guessed number cannot pass by luck
 HR_BPM = 137
 HR_LATER = 152  # from the second question on
-live = {"hr_bpm": HR_BPM}
+live: dict = {"hr_bpm": HR_BPM, "state": "running"}
 SPEED_MPS = 1000 / 332  # 5'32" per km
 
 
@@ -86,7 +86,7 @@ def frame_json(seq: int, elapsed: float) -> bytes:
             "ts": now,
             "phone_ts": now,
             "activity": "running",
-            "state": "running",
+            "state": live["state"],
             "elapsed_s": elapsed,
             "hr_bpm": live["hr_bpm"],
             "distance_m": round(2400 + SPEED_MPS * elapsed, 1),
@@ -242,6 +242,23 @@ async def main(api_url: str, invite: str, log_cmd: str | None) -> int:
     # power is absent from the frames: the coach should say it has no data (recorded, not asserted)
     power = await ask("我现在功率多少瓦？")
 
+    # COCH-19: asked again, the coach repeated the very same sentence
+    model = await ask("你是什么模型？")
+    model_again = await ask("我是问你是什么大语言模型？")
+    checks["identity_not_repeated"] = bool(model_again["answer"]) and (
+        model_again["answer"].strip() != model["answer"].strip()
+    )
+
+    # COCH-19: asked to talk about the run after it ended, the coach read every metric out
+    live["state"] = "ended"
+    await asyncio.sleep(2)
+    await until_quiet(30)
+    await asyncio.sleep(8)
+    await until_quiet(30)
+    review = await ask("跟我聊聊这次跑步的感觉，还有下次怎么跑。")
+    metrics_named = [m for m in ("心率", "配速", "步频", "公里") if m in review["answer"]]
+    checks["post_run_chat_not_a_metric_dump"] = bool(review["answer"]) and len(metrics_named) <= 1
+
     paths = await media_paths(room)
     metrics_task.cancel()
     await room.disconnect()
@@ -252,7 +269,7 @@ async def main(api_url: str, invite: str, log_cmd: str | None) -> int:
         "room": session["room"],
         "media_paths": paths,
         "checks": checks,
-        "turns": [hr, hr_again, pace, power],
+        "turns": [hr, hr_again, pace, power, model, model_again, review],
         "transcripts": debug,
     }
     ARTIFACTS.mkdir(exist_ok=True)

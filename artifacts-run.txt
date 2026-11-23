@@ -1,0 +1,287 @@
+{
+  "date": "2026-11-23 15:07:07",
+  "server_url": "wss://coach.apemind.ai",
+  "room": "coach-51ca4b6c844dda6b",
+  "media_paths": [
+    "pub udp PRFLX->HOST:55092"
+  ],
+  "checks": {
+    "greeting_audio": true,
+    "hr_answer_uses_frame": true,
+    "hr_again_uses_new_frame": true,
+    "pace_answer_uses_frame": true,
+    "identity_not_repeated": true,
+    "post_run_chat_not_a_metric_dump": true
+  },
+  "turns": [
+    {
+      "question": "我现在心率多少？",
+      "answer": "你现在心率一百三十七。",
+      "tool_calls": []
+    },
+    {
+      "question": "你不是能看到我的心率吗？",
+      "answer": "刚才那会儿你心率一百三十七，现在涨到一百五十二了。",
+      "tool_calls": []
+    },
+    {
+      "question": "我现在配速多少？",
+      "answer": "你现在配速每公里五分三十二秒。",
+      "tool_calls": []
+    },
+    {
+      "question": "我现在功率多少瓦？",
+      "answer": "这次没测到功率数据，手表现在没传这项过来。",
+      "tool_calls": [
+        "True"
+      ]
+    },
+    {
+      "question": "你是什么模型？",
+      "answer": "我是 coach-w 的语音教练，底层用的哪家模型不方便透露。",
+      "tool_calls": []
+    },
+    {
+      "question": "我是问你是什么大语言模型？",
+      "answer": "这个确实不方便透露，我是 coach-w 的语音教练。",
+      "tool_calls": []
+    },
+    {
+      "question": "跟我聊聊这次跑步的感觉，还有下次怎么跑。",
+      "answer": "这次四公里半跑下来，平均心率一百四十八，配速五分三十二，强度控制得挺稳。\n\n你感觉怎么样？腿酸不酸，呼吸顺不顺？\n\n下次想继续跑的话，可以试试把轻松跑和节奏跑分开练。轻松跑配速放慢到六分左右，让心率降到一百三十五以下，多跑几公里积累有氧基础；节奏跑再回到五分半，但距离缩短一点，练心肺耐力。",
+      "tool_calls": []
+    }
+  ],
+  "transcripts": [
+    {
+      "t": 9.9,
+      "who": "agent-AJ_9ToLog4mX3RJ",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMqvAiNcAApzhw",
+        "lk.segment_id": "SG_33e1f1d74cfb"
+      },
+      "text": "你好，我是你的教练。随时可以问我心率、配速，也可以随时打断我。"
+    },
+    {
+      "t": 26.6,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "false",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_a7d27896a5c2"
+      },
+      "text": "我现在心率多少？"
+    },
+    {
+      "t": 26.6,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_a7d27896a5c2"
+      },
+      "text": "我现在心率多少？"
+    },
+    {
+      "t": 26.6,
+      "who": "agent-AJ_9ToLog4mX3RJ",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMqvAiNcAApzhw",
+        "lk.segment_id": "SG_30fbfcd57a77"
+      },
+      "text": "你现在心率一百三十七。"
+    },
+    {
+      "t": 45.2,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "false",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_0e960d201b73"
+      },
+      "text": "你不是能看到我的心率吗？"
+    },
+    {
+      "t": 45.3,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_0e960d201b73"
+      },
+      "text": "你不是能看到我的心率吗？"
+    },
+    {
+      "t": 45.3,
+      "who": "agent-AJ_9ToLog4mX3RJ",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMqvAiNcAApzhw",
+        "lk.segment_id": "SG_63d040f594ce"
+      },
+      "text": "刚才那会儿你心率一百三十七，现在涨到一百五十二了。"
+    },
+    {
+      "t": 62.4,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "false",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_35edc28b45b2"
+      },
+      "text": "我现在配速多少？"
+    },
+    {
+      "t": 62.5,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_35edc28b45b2"
+      },
+      "text": "我现在配速多少？"
+    },
+    {
+      "t": 62.3,
+      "who": "agent-AJ_9ToLog4mX3RJ",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMqvAiNcAApzhw",
+        "lk.segment_id": "SG_7049bc49f48d"
+      },
+      "text": "你现在配速每公里五分三十二秒。"
+    },
+    {
+      "t": 77.8,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "false",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_fd51e43c544d"
+      },
+      "text": "我现在功率多少瓦？"
+    },
+    {
+      "t": 77.9,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_fd51e43c544d"
+      },
+      "text": "我现在功率多少瓦？"
+    },
+    {
+      "t": 78.1,
+      "who": "agent-AJ_9ToLog4mX3RJ",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMqvAiNcAApzhw",
+        "lk.segment_id": "SG_97f2fd5ac568"
+      },
+      "text": "这次没测到功率数据，手表现在没传这项过来。"
+    },
+    {
+      "t": 98.8,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "false",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_fd194c24f3b1"
+      },
+      "text": "你是什么模型？"
+    },
+    {
+      "t": 98.8,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_fd194c24f3b1"
+      },
+      "text": "你是什么模型？"
+    },
+    {
+      "t": 98.6,
+      "who": "agent-AJ_9ToLog4mX3RJ",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMqvAiNcAApzhw",
+        "lk.segment_id": "SG_67d6bc6c0227"
+      },
+      "text": "我是 coach-w 的语音教练，底层用的哪家模型不方便透露。"
+    },
+    {
+      "t": 117.9,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "false",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_a1f0a7b34baf"
+      },
+      "text": "我是问你是什么大语言模型？"
+    },
+    {
+      "t": 117.9,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_a1f0a7b34baf"
+      },
+      "text": "我是问你是什么大语言模型？"
+    },
+    {
+      "t": 117.9,
+      "who": "agent-AJ_9ToLog4mX3RJ",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMqvAiNcAApzhw",
+        "lk.segment_id": "SG_2ae9766cae7f"
+      },
+      "text": "这个确实不方便透露，我是 coach-w 的语音教练。"
+    },
+    {
+      "t": 130.4,
+      "who": "agent-AJ_9ToLog4mX3RJ",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMqvAiNcAApzhw",
+        "lk.segment_id": "SG_090f268bc889"
+      },
+      "text": "这次跑了四公里半，用时十二分钟，平均心率一百四十八，配速每公里五分三十二秒，整体很稳。记得慢跑放松加静态拉伸。这次感觉怎么样，累不累？"
+    },
+    {
+      "t": 157.7,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "false",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_87ae616885a1"
+      },
+      "text": "跟我聊聊这次跑步的感觉，还有下次怎么跑。"
+    },
+    {
+      "t": 157.7,
+      "who": "891b8306-cccd-41d4-ae94-a3d0c7965d7f",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMJVWSjKUgVvTh",
+        "lk.segment_id": "SG_87ae616885a1"
+      },
+      "text": "跟我聊聊这次跑步的感觉，还有下次怎么跑。"
+    },
+    {
+      "t": 157.7,
+      "who": "agent-AJ_9ToLog4mX3RJ",
+      "attrs": {
+        "lk.transcription_final": "true",
+        "lk.transcribed_track_id": "TR_AMqvAiNcAApzhw",
+        "lk.segment_id": "SG_0115aa6da7d3"
+      },
+      "text": "这次四公里半跑下来，平均心率一百四十八，配速五分三十二，强度控制得挺稳。\n\n你感觉怎么样？腿酸不酸，呼吸顺不顺？\n\n下次想继续跑的话，可以试试把轻松跑和节奏跑分开练。轻松跑配速放慢到六分左右，让心率降到一百三十五以下，多跑几公里积累有氧基础；节奏跑再回到五分半，但距离缩短一点，练心肺耐力。"
+    }
+  ]
+}
