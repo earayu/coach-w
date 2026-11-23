@@ -10,6 +10,8 @@ struct LobbyView: View {
     let lastError: String?
     var isStartingWatch = false
     var isWatchSlowToStart = false
+    /// Starting a workout also connects the coach (spec 7.6).
+    var coachJoinsWorkouts = true
     let onStartWatch: (WorkoutActivity) -> Void
     var onCancelStart: () -> Void = {}
     let onConnectVoice: () -> Void
@@ -36,7 +38,7 @@ struct LobbyView: View {
                         .foregroundStyle(Theme.secondaryText)
                 }
             } header: {
-                Text("在手表上开始")
+                Text("开始")
             } footer: {
                 if isStartingWatch {
                     Text(isWatchSlowToStart
@@ -46,7 +48,9 @@ struct LobbyView: View {
                 } else if let lastError {
                     Text(lastError).foregroundStyle(Theme.red)
                 } else {
-                    Text("运动由 Apple Watch 记录，iPhone 显示数据并连接语音教练。")
+                    Text(coachJoinsWorkouts
+                        ? "运动由 Apple Watch 记录，教练随运动自动接通。也可以直接在手表上开始。"
+                        : "运动由 Apple Watch 记录。也可以直接在手表上开始。")
                 }
             }
 
@@ -82,7 +86,7 @@ struct LobbyView: View {
                 Button("断开", role: .destructive, action: onStopVoice)
                     .foregroundStyle(Theme.red)
             } else if isConfigured {
-                Button("连接", action: onConnectVoice)
+                Button("和教练聊聊", action: onConnectVoice)
                     .fontWeight(.semibold)
             } else {
                 Button("去设置", action: onOpenSettings)

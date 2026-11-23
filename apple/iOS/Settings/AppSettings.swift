@@ -61,6 +61,15 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(cueWriter, forKey: "cue_writer") }
     }
 
+    /// The coach connects by itself when a workout starts (spec 7.6). Off: the watch records and
+    /// buzzes only, and the coach comes when called.
+    var coachJoinsWorkouts: Bool {
+        didSet { UserDefaults.standard.set(coachJoinsWorkouts, forKey: "coach_joins_workouts") }
+    }
+
+    /// Whether starting a workout should bring the coach along right now.
+    var wantsCoachForWorkout: Bool { coachJoinsWorkouts && isConfigured }
+
     /// What the server offers (`server/src/coachw/session.py` DEFAULT_WRITER_MODELS).
     static let cueWriters: [(id: String, title: String, detail: String)] = [
         ("", "实时模型直接说", "最快，但不太会结合常识看数据"),
@@ -94,6 +103,7 @@ final class AppSettings {
         inviteCode = (Keychain.get("invite_code") ?? "").trimmedForSettings
         apiBaseURL = (UserDefaults.standard.string(forKey: "api_base_url") ?? "").trimmedForSettings
         cueWriter = UserDefaults.standard.string(forKey: "cue_writer") ?? Self.defaultCueWriter
+        coachJoinsWorkouts = UserDefaults.standard.object(forKey: "coach_joins_workouts") as? Bool ?? true
         #if DEBUG
         // Development builds can be configured at launch, e.g.
         // `xcrun devicectl device process launch --environment-variables '{"COACHW_API_BASE_URL": "..."}'`

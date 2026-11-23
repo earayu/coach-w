@@ -51,6 +51,12 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle("运动开始时接通教练", isOn: $settings.coachJoinsWorkouts)
+                } footer: {
+                    Text("在手机或手表上开始运动，教练就自动接通；运动结束后陪你复盘，安静 2 分钟后自己挂断。关掉后只由手表记录和震动，需要时在首页点「和教练聊聊」。")
+                }
+
+                Section {
                     Button {
                         UIPasteboard.general.string = settings.athleteID
                         copiedAthleteID = true

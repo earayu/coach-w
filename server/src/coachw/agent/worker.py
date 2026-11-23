@@ -19,6 +19,7 @@ from livekit.agents import AgentServer, AgentSession, JobContext, cli
 
 from coachw.agent.coach import (
     GREETING,
+    PRE_WORKOUT_GREETING,
     RECONNECT_GREETING,
     SESSION_CAP_FAREWELL,
     CoachAgent,
@@ -171,7 +172,10 @@ async def greeting_for(brain: CoachBrain, inbox: AthleteInbox) -> str:
     """The first-time greeting, or a short "I'm back" when the phone resumes a workout."""
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(inbox.resumed.wait(), RESUME_WAIT_S)
-    return brain.resume_greeting() or GREETING
+    if resumed := brain.resume_greeting():
+        return resumed
+    # connected before the watch started (spec 7.6): talk about the plan, not live numbers
+    return GREETING if brain.state.latest is not None else PRE_WORKOUT_GREETING
 
 
 async def end_when_cap_reached(
@@ -291,7 +295,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # The greeting goes first: it is an `instructions=` reply, which Qwen only follows while the
     # conversation has no user turn yet, and cues are user turns (spec 4.2, 14.1).
     greeting = await greeting_for(brain, inbox)
-    if history and greeting == GREETING:
+    if history and greeting in (GREETING, PRE_WORKOUT_GREETING):
         greeting = RECONNECT_GREETING
     session.generate_reply(instructions=greeting)
     writer = cue_writer_for(meta, brain, agent)

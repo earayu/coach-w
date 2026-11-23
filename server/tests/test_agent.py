@@ -178,7 +178,7 @@ def test_cap_says_goodbye_then_closes_the_room():
 def test_farewell_only_blames_the_day_when_the_day_cut_the_session_short():
     assert cap_farewell(3600, 3600) == SESSION_LENGTH_FAREWELL
     assert cap_farewell(900, 3600) == SESSION_CAP_FAREWELL
-    assert "用完" in SESSION_CAP_FAREWELL and "重新连接" in SESSION_LENGTH_FAREWELL
+    assert "用完" in SESSION_CAP_FAREWELL and "自动回来" in SESSION_LENGTH_FAREWELL
 
 
 def test_prompt_forbids_guessing_numbers():

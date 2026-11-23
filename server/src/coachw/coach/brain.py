@@ -16,7 +16,7 @@ from coachw.coach.cue_queue import Cue, CueQueue, Release
 from coachw.coach.director import GOAL_KEY, Director
 from coachw.coach.events import EventEngine, RuleContext
 from coachw.coach.format import say_distance, say_duration, speed_kmh
-from coachw.coach.metrics_state import MetricsState
+from coachw.coach.metrics_state import JOINED_AT_START_S, MetricsState
 from coachw.profiles.base import ActivityProfile, Athlete
 from coachw.profiles.registry import profile_for
 from coachw.protocol import (
@@ -29,6 +29,8 @@ from coachw.protocol import (
 )
 
 QUIET_MAX_MIN = 30
+
+STATUS_PREFIX = "【运动状态，仅供参考，不要回复，用户没问就不要念】"
 
 # Workout time going back by more than this (on a newer frame) means a new workout started.
 NEW_WORKOUT_REWIND_S = 5.0
@@ -144,6 +146,10 @@ class CoachBrain:
         """Carry on a workout an earlier session coached (spec 7.4). Returns whether it applied."""
         if self.resumed is not None:
             return False
+        if resume.elapsed_s <= JOINED_AT_START_S:
+            # the phone connects the coach as the workout starts (spec 7.6): this session sees
+            # it from the start itself, and greets the start instead of "I'm back"
+            return False
         if self.profile is None or resume.activity not in self.profile.activity_types:
             if self.state.latest is not None:
                 # this session already follows another activity first-hand
@@ -239,7 +245,8 @@ class CoachBrain:
         as they are now; the loop replaces it the moment the athlete starts speaking, so a
         question is answered from what the watch shows at that moment (spec 4.2, COCH-18)."""
         if self.profile is None or self.state.latest is None:
-            return None
+            # before the watch starts: the coach chats about the plan, not live numbers (spec 7.6)
+            return f"{STATUS_PREFIX}还没开始运动：手表还没开始记录，没有任何运动数据。"
         parts = [f"运动：{self.profile.label}", f"阶段：{self.phase_label()}"]
         parts.append(f"workout 状态：{self.state.latest.state}")
         if self.state.started:
@@ -261,7 +268,7 @@ class CoachBrain:
             parts.append(f"手表此刻的实时数据：{readings}")
         else:
             parts.append("手表此刻没有心率等实时数据")
-        return "【运动状态，仅供参考，不要回复，用户没问就不要念】" + "；".join(parts) + "。"
+        return STATUS_PREFIX + "；".join(parts) + "。"
 
     def get_metrics(self) -> dict[str, Any]:
         out = self.state.snapshot()

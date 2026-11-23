@@ -212,7 +212,6 @@ def test_set_quiet_is_clamped():
 def test_status_summary_carries_the_live_readings():
     # COCH-18: the coach answered "what's my heart rate" without looking; it now always sees it
     s = Session()
-    assert s.brain.status_summary() is None
     s.run.run(5)
     s.brain.run_profile_tool("adjust_target_pace", {"pace_min": 5, "pace_sec": 30, "goal_km": 5})
     s.run.run(700, speed=1000 / 330, hr=163)
@@ -224,6 +223,12 @@ def test_status_summary_carries_the_live_readings():
     assert "手表此刻的实时数据：心率 163，配速 每公里 5 分 30 秒" in text
     s.run.run(30, hr=171)
     assert "心率 171" in s.brain.status_summary()
+
+
+def test_status_summary_before_the_workout_says_it_has_not_started():
+    # spec 7.6: the coach is connected before the watch starts and must not talk as if running
+    text = Session().brain.status_summary()
+    assert text.startswith("【运动状态") and "还没开始运动" in text
 
 
 def test_status_summary_says_when_there_are_no_live_readings():

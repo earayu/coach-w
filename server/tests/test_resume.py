@@ -9,7 +9,7 @@ import pytest
 from test_brain import Session
 
 from coachw.agent import worker
-from coachw.agent.coach import GREETING
+from coachw.agent.coach import GREETING, PRE_WORKOUT_GREETING
 from coachw.agent.worker import AthleteInbox, greeting_for
 from coachw.protocol import METRICS_TOPIC, RESUME_TOPIC, CoachResume
 
@@ -126,9 +126,28 @@ def test_greeting_waits_for_resume_then_falls_back(monkeypatch):
     s = Session()
     inbox = AthleteInbox()
     inbox.attach(s.brain, "athlete")
-    assert asyncio.run(greeting_for(s.brain, inbox)) == GREETING
-    inbox.on_data(packet(RESUME, RESUME_TOPIC))
-    assert asyncio.run(greeting_for(s.brain, inbox)).startswith("【教练提示】")
+
+    async def greetings() -> list[str]:
+        before = await greeting_for(s.brain, inbox)
+        s.run.run(3)
+        started = await greeting_for(s.brain, inbox)
+        inbox.on_data(packet(RESUME, RESUME_TOPIC))
+        return [before, started, await greeting_for(s.brain, inbox)]
+
+    before, started, resumed = asyncio.run(greetings())
+    assert before == PRE_WORKOUT_GREETING
+    assert started == GREETING
+    assert resumed.startswith("【教练提示】")
+
+
+def test_resume_at_the_very_start_is_ignored_so_the_start_is_greeted():
+    # spec 7.6: the phone connects the coach as the workout starts and sends a resume of a few
+    # seconds; the coach greets the start instead of "I'm back, 3 seconds so far"
+    s = Session()
+    assert not s.brain.resume(resume(elapsed_s=4.0, distance_m=3.0, km_marks_s=[]))
+    assert s.brain.resume_greeting() is None
+    s.run.run(5)
+    assert "start" in s.kinds()
 
 
 def test_starting_a_new_workout_clears_previous_resume_state():

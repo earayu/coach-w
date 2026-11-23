@@ -66,6 +66,8 @@ final class VoiceSession: NSObject {
     var isUserSpeaking: Bool { machine.isUserSpeaking }
     var reconnects: Int { machine.reconnects }
     var isActive: Bool { machine.isActive }
+    /// The server ended the session on purpose (length cap, removed), as opposed to the user.
+    var endedByServer: Bool { machine.phase == .failed(.sessionEndedByServer) }
     /// The user wants the coach but cannot hear it right now: the phone speaks key cues itself.
     var needsLocalFallback: Bool { machine.needsLocalFallback }
 

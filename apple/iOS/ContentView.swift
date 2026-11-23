@@ -130,7 +130,14 @@ struct ContentView: View {
                 lastError: mirror.lastError,
                 isStartingWatch: mirror.isStartingWatch,
                 isWatchSlowToStart: mirror.isWatchSlowToStart,
-                onStartWatch: { chosen in Task { await mirror.startOnWatch(chosen) } },
+                coachJoinsWorkouts: settings.wantsCoachForWorkout,
+                onStartWatch: { chosen in
+                    Task {
+                        // the coach talks while the watch wakes up, which can take a while (COCH-17)
+                        if settings.wantsCoachForWorkout, !voice.isActive { await voice.start(settings: settings) }
+                        await mirror.startOnWatch(chosen)
+                    }
+                },
                 onCancelStart: { mirror.cancelStart() },
                 onConnectVoice: { Task { await voice.start(settings: settings) } },
                 onToggleMute: { Task { await voice.toggleMute() } },
