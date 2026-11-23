@@ -104,6 +104,13 @@ class CoachLoop:
             return
         try:
             await self.refresh_status()
+            # the age only, never the readings: they are health data
+            age, latest = self.brain.state.age_s(), self.brain.state.latest
+            logger.info(
+                "status refreshed as the athlete spoke, frame age %s seq %s",
+                "none" if age is None else f"{age:.1f}s",
+                latest.seq if latest else None,
+            )
         except Exception as e:
             logger.warning("status refresh failed: %s", type(e).__name__)
 
