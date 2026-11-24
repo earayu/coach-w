@@ -54,6 +54,7 @@ CYCLING = ActivityProfile(
     name="cycling",
     label="骑行",
     activity_types=("cycling",),
+    spoken_names=("骑",),
     mode=Mode.COACH,
     metrics=(
         MetricSpec("hr_bpm", "心率", lambda v: f"{v:.0f}"),

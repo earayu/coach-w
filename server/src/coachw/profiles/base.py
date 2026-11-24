@@ -102,6 +102,8 @@ class ActivityProfile:
     """What the coach does with the start milestone."""
     end_hint: str = "用一句话总结，提醒放松拉伸，再问用户这次感觉怎么样。"
     """What the coach does with the end-of-workout summary."""
+    spoken_names: tuple[str, ...] = ()
+    """Words an athlete uses for this activity, e.g. to start it by voice (spec 7.6)."""
     speed_as_pace: bool = True
     """Speed is read as pace per km (on foot); False reads it as km/h (on wheels)."""
     time_mark_s: float | None = None

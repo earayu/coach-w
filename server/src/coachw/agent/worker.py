@@ -28,6 +28,7 @@ from coachw.agent.coach import (
 from coachw.agent.cue_writer import CueWriter, conversation_of
 from coachw.agent.loop import CoachLoop
 from coachw.agent.transcript import Transcript, recent_conversation, transcript_dir
+from coachw.agent.voice_start import VoiceStart
 from coachw.coach.brain import CoachBrain
 from coachw.profiles.base import Athlete
 from coachw.protocol import (
@@ -283,6 +284,20 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     turns = TurnLog()
     turns.attach(session)
+    voice_start = VoiceStart()
+    pending: set[asyncio.Task] = set()
+
+    def on_athlete_words(ev: Any) -> None:
+        # a clear "let's start" starts the watch even when the model only agrees (spec 7.6)
+        if not ev.is_final or brain.workout_in_progress():
+            return
+        if activity := voice_start.heard(ev.transcript):
+            logger.info("athlete asked to start %s", activity)
+            task = asyncio.create_task(agent.request_start(activity))
+            pending.add(task)
+            task.add_done_callback(pending.discard)
+
+    session.on("user_input_transcribed", on_athlete_words)
     if directory is not None:
         transcript = Transcript(directory, room=ctx.room.name, athlete_id=meta.athlete_id)
         transcript.attach(session)

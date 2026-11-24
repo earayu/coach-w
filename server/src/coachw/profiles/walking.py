@@ -59,11 +59,19 @@ SAFETY_TOPICS = (
 )
 
 
-def _on_foot(name: str, label: str, activity: str, prompt: str, topics: tuple[str, ...]):
+def _on_foot(
+    name: str,
+    label: str,
+    activity: str,
+    prompt: str,
+    topics: tuple[str, ...],
+    spoken: tuple[str, ...],
+):
     return ActivityProfile(
         name=name,
         label=label,
         activity_types=(activity,),
+        spoken_names=spoken,
         mode=Mode.COMPANION,
         metrics=METRICS,
         phases=(Phase("active", f"{label}中", after_s=0),),
@@ -96,6 +104,7 @@ WALKING = _on_foot(
         *SAFETY_TOPICS,
         "陪用户聊一个轻松的话题，比如最近吃了什么好吃的。",
     ),
+    ("散步", "走路", "走走", "步行", "遛弯"),
 )
 
 HIKING = _on_foot(
@@ -114,4 +123,5 @@ HIKING = _on_foot(
         "提醒用户上坡放慢、小步走，调整呼吸。",
         "问用户累不累，要不要找个地方歇一下。",
     ),
+    ("徒步", "爬山"),
 )

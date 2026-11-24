@@ -149,6 +149,7 @@ RUNNING = ActivityProfile(
     name="running",
     label="跑步",
     activity_types=("running",),
+    spoken_names=("跑",),
     mode=Mode.COACH,
     metrics=(
         MetricSpec("hr_bpm", "心率", lambda v: f"{v:.0f}"),

@@ -26,6 +26,17 @@ def _index(profiles: tuple[ActivityProfile, ...]) -> dict[str, ActivityProfile]:
 _BY_ACTIVITY = _index(PROFILES)
 
 
+def activity_spoken_in(text: str) -> str | None:
+    """The activity named first in what the athlete said, e.g. "开始跑步吧" → running."""
+    found = [
+        (pos, profile.activity_types[0])
+        for profile in PROFILES
+        for word in profile.spoken_names
+        if (pos := text.find(word)) >= 0
+    ]
+    return min(found)[1] if found else None
+
+
 def profile_for(activity: str) -> ActivityProfile:
     """The profile for `activity`; every activity without its own profile gets the fallback."""
     if profile := _BY_ACTIVITY.get(activity):
