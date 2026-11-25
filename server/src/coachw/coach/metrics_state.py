@@ -61,10 +61,35 @@ MIN_WINDOW_SAMPLES = 3
 MIN_WINDOW_COVERAGE = 0.6
 
 
+# Moving time counts gaps between samples up to this long (a late batch is not a long run).
+MAX_MOVING_GAP_S = 5.0
+# A climb is measured over at least this much distance; GPS altitude is noisy over less.
+MIN_CLIMB_DISTANCE_M = 40.0
+# Samples averaged at each end of a climb window to smooth altitude noise.
+CLIMB_EDGE_SAMPLES = 3
+
+# Whether the readings look like the athlete is doing the activity (from its profile).
+Moving = Callable[[Mapping[str, float]], bool]
+
+
 @dataclass(frozen=True, slots=True)
 class Sample:
     elapsed_s: float
     values: dict[str, float]
+    distance_m: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Climb:
+    """Altitude change over the last window of running time; `grade` is rise over distance."""
+
+    alt_change_m: float
+    distance_m: float
+    span_s: float
+
+    @property
+    def grade(self) -> float:
+        return self.alt_change_m / self.distance_m
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +151,13 @@ class MetricsState:
         history_s: float = 300.0,
         stale_after_s: float = STALE_AFTER_S,
         clock: Callable[[], float] = time.monotonic,
+        moving: Moving | None = None,
     ) -> None:
+        self.moving = moving
+        self.moving_since_s: float | None = None
+        """Workout time at which the athlete first looked like doing the activity (COCH-22: the
+        watch ran for six minutes in a car before the run began)."""
+        self.moving_s = 0.0
         self.split_m = split_m
         self.baseline_s = baseline_s
         self.history_s = history_s
@@ -165,7 +196,15 @@ class MetricsState:
             self.started = True
             self.first_elapsed_s = frame.elapsed_s
         values = {k: float(v) for k in SAMPLED_FIELDS if (v := getattr(frame, k)) is not None}
-        sample = Sample(frame.elapsed_s, values)
+        distance = None if frame.distance_m is None else float(frame.distance_m)
+        sample = Sample(frame.elapsed_s, values, distance)
+        if self.moving is not None and self.moving(values):
+            if self.moving_since_s is None:
+                self.moving_since_s = frame.elapsed_s
+            elif self._samples:
+                self.moving_s += min(
+                    frame.elapsed_s - self._samples[-1].elapsed_s, MAX_MOVING_GAP_S
+                )
         self._samples.append(sample)
         while self._samples and self._samples[0].elapsed_s < frame.elapsed_s - self.history_s:
             self._samples.popleft()
@@ -230,6 +269,9 @@ class MetricsState:
             return
         self.started = True
         self.first_elapsed_s = min(self.first_elapsed_s or 0.0, 0.0)
+        # the earlier session saw the start; assume the athlete has been moving since then
+        if self.moving_since_s is None:
+            self.moving_since_s = 0.0
         if self.split_m and self.split_m % 1000 == 0:
             per = int(self.split_m // 1000)
             start = 0.0
@@ -271,6 +313,20 @@ class MetricsState:
     @property
     def elapsed_s(self) -> float:
         return self._latest.elapsed_s if self._latest else 0.0
+
+    @property
+    def moving_started(self) -> bool:
+        """The athlete is doing the activity (always true without a `moving` check)."""
+        return self.moving is None or self.moving_since_s is not None
+
+    @property
+    def effort_s(self) -> float:
+        """Workout time since the athlete started moving: what phases and warm-up go by."""
+        if self.moving is None:
+            return self.elapsed_s
+        if self.moving_since_s is None:
+            return 0.0
+        return max(0.0, self.elapsed_s - self.moving_since_s)
 
     @property
     def distance_m(self) -> float | None:
@@ -316,6 +372,29 @@ class MetricsState:
             count=len(values),
             span_s=span,
         )
+
+    def climb(self, seconds: float) -> Climb | None:
+        """Altitude change over the last `seconds` of running time, or None without enough
+        altitude and distance data. Each end averages a few samples: one GPS fix jumps metres."""
+        if not self._samples:
+            return None
+        since = self._samples[-1].elapsed_s - seconds
+        points = [
+            (s.elapsed_s, s.values["alt_m"], s.distance_m)
+            for s in self._samples
+            if s.elapsed_s > since and "alt_m" in s.values and s.distance_m is not None
+        ]
+        if len(points) < 2 * CLIMB_EDGE_SAMPLES:
+            return None
+        span = points[-1][0] - points[0][0]
+        if span < seconds * MIN_WINDOW_COVERAGE:
+            return None
+        head, tail = points[:CLIMB_EDGE_SAMPLES], points[-CLIMB_EDGE_SAMPLES:]
+        rise = sum(p[1] for p in tail) / len(tail) - sum(p[1] for p in head) / len(head)
+        run = (tail[-1][2] or 0.0) - (head[0][2] or 0.0)
+        if run < MIN_CLIMB_DISTANCE_M:
+            return None
+        return Climb(alt_change_m=rise, distance_m=run, span_s=span)
 
     def streak_s(self, name: str, predicate: Callable[[float], bool]) -> float:
         """How long the newest samples have satisfied `predicate` without a break.

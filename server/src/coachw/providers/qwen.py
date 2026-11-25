@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from livekit.agents import llm
 from livekit.plugins import aliyun
+
+logger = logging.getLogger("coachw.agent")
 
 TURN_DETECTION = ("server_vad", "smart_turn")
 # Silence that ends the athlete's turn. A runner pauses to breathe mid-sentence: with Qwen's
@@ -64,7 +67,24 @@ def pending_user_audio(remote: llm.ChatContext, target: llm.ChatContext) -> list
     ]
 
 
+def is_benign_error(event: Mapping[str, object]) -> bool:
+    """A context sync re-creating an item Qwen still has, e.g. a coach line the athlete cut off
+    while the status summary was refreshed. The item is there, nothing is lost; the plugin (1.8.10)
+    still fails every pending generation on it, which dropped replies (COCH-22: 10 per run)."""
+    error = event.get("error")
+    if not isinstance(error, Mapping):
+        return False
+    message = str(error.get("message") or "")
+    return error.get("code") == "invalid_value" and message.startswith("Item already exists")
+
+
 class _RealtimeSession(aliyun.realtime.RealtimeSession):
+    def _handle_error(self, event: dict) -> None:
+        if is_benign_error(event):
+            logger.info("ignored Qwen error: item already exists")
+            return
+        super()._handle_error(event)
+
     async def update_chat_ctx(self, chat_ctx: llm.ChatContext) -> None:
         # Qwen can call a tool before the user's audio turn is transcribed. That turn is still
         # empty here, so the plugin (1.8.10) drops it from the target context and *deletes* it on

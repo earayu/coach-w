@@ -11,8 +11,10 @@ import contextlib
 import json
 import logging
 import os
-from datetime import UTC, datetime
+import time
+from datetime import UTC, datetime, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from livekit import rtc
 from livekit.agents import AgentServer, AgentSession, JobContext, cli
@@ -27,9 +29,11 @@ from coachw.agent.coach import (
 )
 from coachw.agent.cue_writer import CueWriter, conversation_of
 from coachw.agent.loop import CoachLoop
+from coachw.agent.memory import AthleteMemory
 from coachw.agent.transcript import Transcript, recent_conversation, transcript_dir
-from coachw.agent.voice_start import VoiceStart
-from coachw.coach.brain import CoachBrain
+from coachw.agent.turns import TurnGuard
+from coachw.agent.voice_start import VoiceStart, control_heard
+from coachw.coach.brain import DEFAULT_TZ, CoachBrain
 from coachw.profiles.base import Athlete
 from coachw.protocol import (
     CUE_TOPIC,
@@ -39,11 +43,13 @@ from coachw.protocol import (
     CoachResume,
     MetricsFrame,
     ProtocolError,
+    WorkoutState,
 )
 from coachw.providers import get_realtime_model
 from coachw.providers.writer import TextWriter
 from coachw.session import (
     AGENT_NAME,
+    CONTROL_METHOD,
     HEARTBEAT_METHOD,
     PLACES_METHOD,
     START_METHOD,
@@ -61,6 +67,21 @@ server = AgentServer(
     # health endpoint (8081 in production) is for the host only; the default binds every interface
     host="127.0.0.1",
 )
+
+
+# With a cue writer, the coach is woken this long after anyone last spoke and decides itself
+# whether to say something (spec 4.2.2).
+CHECK_IN_S = 75.0
+
+
+def check_in_s() -> float | None:
+    value = float(os.environ.get("COACHW_CHECK_IN_S", str(CHECK_IN_S)))
+    return value if value > 0 else None
+
+
+def athlete_tz() -> tzinfo:
+    name = os.environ.get("COACHW_TZ", "").strip()
+    return ZoneInfo(name) if name else DEFAULT_TZ
 
 
 def session_max_s() -> int:
@@ -138,10 +159,12 @@ class TurnLog:
     Logs only counts and lengths, never the words: they are the athlete's conversation (spec 11).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Any = time.monotonic) -> None:
         self.user_turns = 0
         self.coach_replies = 0
         self.errors = 0
+        self._clock = clock
+        self._turn_ended_at: float | None = None
 
     def on_user_input(self, ev: Any) -> None:
         if not ev.is_final:
@@ -158,10 +181,25 @@ class TurnLog:
         source, error = type(ev.source).__name__, type(ev.error).__name__
         logger.warning("session error from %s: %s", source, error)
 
+    def on_user_state(self, ev: Any) -> None:
+        if ev.old_state == "speaking" and ev.new_state != "speaking":
+            self._turn_ended_at = self._clock()
+
+    def on_agent_state(self, ev: Any) -> None:
+        # how long the athlete waited for the coach after they stopped talking (COCH-22)
+        if ev.new_state == "speaking" and self._turn_ended_at is not None:
+            logger.info(
+                "coach answered %.1fs after the athlete stopped",
+                self._clock() - self._turn_ended_at,
+            )
+            self._turn_ended_at = None
+
     def attach(self, session: AgentSession) -> None:
         session.on("user_input_transcribed", self.on_user_input)
         session.on("conversation_item_added", self.on_item_added)
         session.on("error", self.on_error)
+        session.on("user_state_changed", self.on_user_state)
+        session.on("agent_state_changed", self.on_agent_state)
 
     def summary(self, frames: int) -> str:
         return (
@@ -246,6 +284,12 @@ async def ask_phone_to_start(room: rtc.Room, identity: str, activity: str) -> di
     return result or {"ok": False, "reason": "phone did not answer"}
 
 
+async def ask_phone_to_control(room: rtc.Room, identity: str, action: str) -> dict[str, Any]:
+    """Has the phone pause, resume or end the workout on the watch (spec 7.6)."""
+    result = await ask_phone(room, identity, CONTROL_METHOD, {"action": action}, START_TIMEOUT_S)
+    return result or {"ok": False, "reason": "phone did not answer (an app without this feature?)"}
+
+
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
@@ -257,7 +301,7 @@ async def entrypoint(ctx: JobContext) -> None:
     ctx.log_context_fields = {"athlete_id": meta.athlete_id, "room": ctx.room.name}
 
     # all coaching state is per session and per athlete (spec 3.1)
-    brain = CoachBrain(Athlete(athlete_id=meta.athlete_id))
+    brain = CoachBrain(Athlete(athlete_id=meta.athlete_id), tz=athlete_tz())
     inbox.attach(brain, participant.identity)
 
     session = AgentSession(llm=get_realtime_model(os.environ.get("COACHW_PROVIDER", "qwen")))
@@ -275,27 +319,43 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     if history:
         logger.info("continuing the conversation from %d earlier lines", len(history))
+    memory = AthleteMemory(directory, meta.athlete_id) if directory is not None else None
+    if memory is not None and (saved := memory.load()):
+        brain.restore_requests(saved)
+        logger.info("restored %d requests the athlete made earlier", len(saved))
     agent = CoachAgent(
         brain,
         keeps_transcript=directory is not None,
         history=history,
         places=lambda query: ask_phone_for_places(ctx.room, participant.identity, query),
         start=lambda activity: ask_phone_to_start(ctx.room, participant.identity, activity),
+        control=lambda action: ask_phone_to_control(ctx.room, participant.identity, action),
+        memory=memory,
     )
     turns = TurnLog()
     turns.attach(session)
+    TurnGuard(session).attach()
     voice_start = VoiceStart()
     pending: set[asyncio.Task] = set()
 
+    def run(coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
     def on_athlete_words(ev: Any) -> None:
-        # a clear "let's start" starts the watch even when the model only agrees (spec 7.6)
-        if not ev.is_final or brain.workout_in_progress():
+        # a clear "let's start" / "pause" works even when the model only agrees (spec 7.6)
+        if not ev.is_final:
             return
-        if activity := voice_start.heard(ev.transcript):
+        if brain.workout_in_progress():
+            latest = brain.state.latest
+            paused = latest is not None and latest.state is WorkoutState.PAUSED
+            if action := control_heard(ev.transcript, paused=paused):
+                logger.info("athlete asked to %s the workout", action)
+                run(agent.request_control(action))
+        elif activity := voice_start.heard(ev.transcript):
             logger.info("athlete asked to start %s", activity)
-            task = asyncio.create_task(agent.request_start(activity))
-            pending.add(task)
-            task.add_done_callback(pending.discard)
+            run(agent.request_start(activity))
 
     session.on("user_input_transcribed", on_athlete_words)
     if directory is not None:
@@ -332,6 +392,8 @@ async def entrypoint(ctx: JobContext) -> None:
         greeting = RECONNECT_GREETING
     session.generate_reply(instructions=greeting)
     writer = cue_writer_for(meta, brain, agent)
+    if writer is not None:
+        brain.check_in_s = check_in_s()
     loop = CoachLoop(brain, agent, session, publish_cue, writer=writer)
     coach = asyncio.create_task(loop.run())
     ctx.add_shutdown_callback(lambda: _cancel(coach))

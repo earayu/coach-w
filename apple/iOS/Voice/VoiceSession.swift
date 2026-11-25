@@ -101,11 +101,19 @@ final class VoiceSession: NSObject {
 
     /// Answers the coach's `start_workout` tool: activity wire name in, JSON out (spec 7.6).
     @ObservationIgnored var startProvider: (@MainActor (String) -> String)?
+    /// Answers the coach's pause / resume / end tools: action in, JSON out (spec 7.6).
+    @ObservationIgnored var controlProvider: (@MainActor (String) -> String)?
+    /// Called right before the coach's microphone is switched on, to release it elsewhere.
+    @ObservationIgnored var onWillEnableMicrophone: (@MainActor () -> Void)?
 
     /// RPC the coach calls to look around the athlete (`server/src/coachw/session.py`).
     static let placesMethod = "coach.places"
     /// RPC the coach calls to start a workout on the watch (`server/src/coachw/session.py`).
     static let startMethod = "coach.start"
+    /// RPC the coach calls to pause, resume or end the workout (`server/src/coachw/session.py`).
+    static let controlMethod = "coach.control"
+    /// A microphone that would not start is tried again this often while the room stays up.
+    static let microphoneRetry: Duration = .seconds(5)
     /// Text the agent takes as the user's words (livekit-agents' chat input).
     static let chatTopic = "lk.chat"
 
@@ -289,7 +297,17 @@ final class VoiceSession: NSObject {
                 await self.listenForTranscripts(in: room)
                 await self.answerPlaces(in: room)
                 await self.answerStart(in: room)
-                try await room.localParticipant.setMicrophone(enabled: micEnabled)
+                await self.answerControl(in: room)
+                if micEnabled { self.onWillEnableMicrophone?() }
+                do {
+                    try await room.localParticipant.setMicrophone(enabled: micEnabled)
+                } catch {
+                    // Leaving here dropped every reconnect within seconds, for 37 minutes, while
+                    // the phone was in a pocket (COCH-22). Stay: the coach still talks, cues
+                    // still reach the watch, and the microphone is tried again.
+                    diag("voice", "microphone did not start: \(error.localizedDescription); listening only, retrying")
+                    self.retryMicrophone(in: room, generation: gen)
+                }
                 guard self.machine.generation == gen else {
                     await room.disconnect()
                     return
@@ -311,6 +329,7 @@ final class VoiceSession: NSObject {
                     return
                 }
                 log.error("voice connect failed: \(error.localizedDescription, privacy: .public)")
+                diag("voice", "connect failed: \(error.localizedDescription)")
                 if self.room === room {
                     self.room = nil
                     self.roomGeneration = nil
@@ -447,6 +466,39 @@ final class VoiceSession: NSObject {
             }
         } catch {
             log.error("start RPC unavailable: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func answerControl(in room: Room) async {
+        do {
+            try await room.registerRpcMethod(Self.controlMethod) { [weak self] data in
+                let action = (try? JSONSerialization.jsonObject(with: Data(data.payload.utf8)) as? [String: Any])?["action"] as? String
+                return await MainActor.run {
+                    guard let control = self?.controlProvider else { return #"{"ok":false,"reason":"not supported"}"# }
+                    return control(action ?? "")
+                }
+            }
+        } catch {
+            log.error("control RPC unavailable: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func retryMicrophone(in room: Room, generation gen: Int) {
+        let id = ObjectIdentifier(room)
+        Task { [weak self] in
+            for attempt in 1... {
+                try? await Task.sleep(for: Self.microphoneRetry)
+                guard let self, self.isCurrent(id), self.machine.generation == gen else { return }
+                guard !self.isMuted else { continue }
+                do {
+                    self.onWillEnableMicrophone?()
+                    try await room.localParticipant.setMicrophone(enabled: true)
+                    diag("voice", "microphone started on retry \(attempt)")
+                    return
+                } catch {
+                    if attempt % 6 == 1 { diag("voice", "microphone retry \(attempt) failed: \(error.localizedDescription)") }
+                }
+            }
         }
     }
 

@@ -10,13 +10,16 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from coachw.coach.cue_queue import Cue, CueQueue, Release
 from coachw.coach.director import GOAL_KEY, Director
-from coachw.coach.events import EventEngine, RuleContext
+from coachw.coach.events import CoachEvent, EventEngine, RuleContext
 from coachw.coach.format import say_distance, say_duration, speed_kmh
-from coachw.coach.metrics_state import JOINED_AT_START_S, MetricsState
+from coachw.coach.metrics_state import JOINED_AT_START_S, Climb, MetricsState
+from coachw.coach.requests import Request, Requests
 from coachw.profiles.base import ActivityProfile, Athlete
 from coachw.profiles.registry import profile_for
 from coachw.protocol import (
@@ -34,6 +37,24 @@ STATUS_PREFIX = "【运动状态，仅供参考，不要回复，用户没问就
 
 # Workout time going back by more than this (on a newer frame) means a new workout started.
 NEW_WORKOUT_REWIND_S = 5.0
+
+# The athlete's local time; the phone does not send its time zone yet.
+DEFAULT_TZ = ZoneInfo("Asia/Shanghai")
+
+# Terrain is described from the last minute; flatter than this is flat.
+CLIMB_WINDOW_S = 60.0
+CLIMB_MENTION_GRADE = 0.02
+CLIMB_MENTION_M = 3.0
+
+# A due request is worth saying for this long, then the next one comes.
+REQUEST_TTL_S = 20.0
+CHECK_IN_TTL_S = 15.0
+
+CHECK_IN_FACTS = (
+    "定时检查，不是用户说的话。想一想现在要不要主动说一句：用户交代过的事、"
+    "数据里值得提的变化（心率、配速、坡度、跑姿）、这个阶段该怎么跑，或者陪他聊一句。"
+    "值得说就说一两句；没什么值得说的，就只输出 SKIP。"
+)
 
 # Cues the watch also buzzes for. Companion chat stays in the ear only.
 WATCH_PRIORITIES = (CuePriority.EMERGENCY, CuePriority.CORRECTION, CuePriority.MILESTONE)
@@ -55,8 +76,26 @@ class Delivery:
     interrupt: bool
     watch: CoachCue | None
 
+    @property
+    def optional(self) -> bool:
+        """A wake-up the cue writer may answer with nothing (spec 4.2.2)."""
+        return self.cue.event.optional
 
-def cue_instructions(cue: Cue, activity: str | None = None) -> str:
+
+def describe_climb(climb: Climb | None) -> str | None:
+    """ "上坡，海拔升了 5 米，坡度约 4%" for a real slope over the last minute, else None."""
+    if climb is None or (
+        abs(climb.grade) < CLIMB_MENTION_GRADE and abs(climb.alt_change_m) < CLIMB_MENTION_M
+    ):
+        return None
+    way, verb = ("上坡", "升") if climb.alt_change_m > 0 else ("下坡", "降")
+    return (
+        f"最近一分钟在{way}，海拔{verb}了 {abs(climb.alt_change_m):.0f} 米，"
+        f"坡度约 {abs(climb.grade) * 100:.0f}%"
+    )
+
+
+def cue_instructions(cue: Cue, activity: str | None = None, terrain: str | None = None) -> str:
     # The realtime model does not apply common sense unless asked at the moment it speaks: told
     # once in the system prompt, it still praised a bike ride's 4'22" "kilometre" at 72 steps a
     # minute (COCH-15, measured on qwen-audio-3.1-realtime-flash). Safety cues stay immediate.
@@ -66,8 +105,14 @@ def cue_instructions(cue: Cue, activity: str | None = None) -> str:
         else f"说之前先用常识想一想，这些数据放在用户正在做的{activity}里说不说得通；"
         "说不通就直说哪里不对、问用户怎么回事，不要夸。"
     )
+    # a slope explains a higher heart rate and a slower pace (COCH-22)
+    ground = (
+        f"地形：{terrain}，评价心率和配速时考虑进去。\n"
+        if terrain and cue.priority is not CuePriority.EMERGENCY
+        else ""
+    )
     return (
-        f"【教练提示】{cue.event.facts}\n"
+        f"【教练提示】{cue.event.facts}\n{ground}"
         f"{check}{PRIORITY_TONE[cue.priority]}。用自然的中文口语对用户说出来，"
         "只使用这里给出的数字，不要补充其他数字，不要提到这是系统提示。"
     )
@@ -81,8 +126,14 @@ class CoachBrain:
         profiles: Callable[[str], ActivityProfile] = profile_for,
         clock: Callable[[], float] = time.monotonic,
         wall_ms: Callable[[], int] = lambda: int(time.time() * 1000),
+        tz: tzinfo = DEFAULT_TZ,
+        check_in_s: float | None = None,
     ) -> None:
         self.athlete = athlete
+        self.tz = tz
+        self.check_in_s = check_in_s
+        """Wake the coach this long after anyone last spoke; it may stay silent (spec 4.2.2)."""
+        self.requests = Requests()
         self._profiles = profiles
         self._clock = clock
         self._wall_ms = wall_ms
@@ -131,7 +182,10 @@ class CoachBrain:
         self.profile = profile
         self.targets = profile.default_targets(self.athlete)
         self.state = MetricsState(
-            split_m=profile.split_m, baseline_s=profile.baseline_s, clock=self._clock
+            split_m=profile.split_m,
+            baseline_s=profile.baseline_s,
+            clock=self._clock,
+            moving=profile.moving,
         )
         self.director = Director(profile)
         self.engine = EventEngine(profile.rules)
@@ -201,6 +255,10 @@ class CoachBrain:
         events = self.engine.evaluate(ctx) + self.director.evaluate(
             self.state, self.targets, since_spoken_s=since_spoken, since_alert_s=since_alert
         )
+        if self.state.is_running and self.state.moving_started and not self.state.is_stale():
+            events += [self._request_event(r) for r in self.requests.due(now)]
+            if self.check_in_s and since_spoken >= self.check_in_s:
+                events.append(self._check_in_event())
         for event in events:
             self.queue.offer(event, now)
         release = self.queue.next(now, user_speaking=user_speaking, agent_speaking=agent_speaking)
@@ -209,6 +267,39 @@ class CoachBrain:
         if release.cue.priority is CuePriority.COMPANION:
             self.director.companion_spoken()
         return self._deliver(release)
+
+    def add_request(self, text: str, *, every_s: float | None, lasting: bool) -> Request | None:
+        return self.requests.add(text, every_s=every_s, lasting=lasting, now=self._clock())
+
+    def restore_requests(self, saved: list[Request]) -> None:
+        """Requests an earlier session was given (athlete memory); timers start from now."""
+        self.requests.restore(saved, self._clock())
+
+    def _request_event(self, request: Request) -> CoachEvent:
+        readings = self.readings()
+        data = f"手表此刻的数据：{readings}。" if readings else "手表此刻没有实时数据。"
+        return CoachEvent(
+            kind="request",
+            priority=CuePriority.MILESTONE,
+            facts=(
+                f"用户之前要求：「{request.text}」，现在到时间了。{data}"
+                "照他的要求说，只说他要的那几项，一句话。"
+            ),
+            cooldown_key=f"request:{request.id}",
+            cooldown_s=0.0,
+            ttl_s=REQUEST_TTL_S,
+        )
+
+    def _check_in_event(self) -> CoachEvent:
+        return CoachEvent(
+            kind="check_in",
+            priority=CuePriority.COMPANION,
+            facts=CHECK_IN_FACTS,
+            cooldown_key="check_in",
+            cooldown_s=self.check_in_s or 0.0,
+            ttl_s=CHECK_IN_TTL_S,
+            optional=True,
+        )
 
     def _deliver(self, release: Release) -> Delivery:
         cue = release.cue
@@ -228,7 +319,8 @@ class CoachBrain:
                 text=cue.event.watch_text,
             )
         label = self.profile.label if self.profile else None
-        return Delivery(cue, cue_instructions(cue, label), release.interrupt, watch)
+        terrain = describe_climb(self.state.climb(CLIMB_WINDOW_S))
+        return Delivery(cue, cue_instructions(cue, label, terrain), release.interrupt, watch)
 
     # -- summaries and tools -------------------------------------------------------------------
 
@@ -253,13 +345,21 @@ class CoachBrain:
         """Context for the model, injected without a reply. It carries the watch's live readings
         as they are now; the loop replaces it the moment the athlete starts speaking, so a
         question is answered from what the watch shows at that moment (spec 4.2, COCH-18)."""
+        # the model has no clock of its own (COCH-22: "you have no sense of time")
+        clock = f"现在时间 {self.local_time()}"
+        asked = [f"用户交代过：{'；'.join(r.describe() for r in self.requests.items)}"]
+        asked = asked if self.requests.items else []
         if self.profile is None or self.state.latest is None:
             # before the watch starts: the coach chats about the plan, not live numbers (spec 7.6)
-            return f"{STATUS_PREFIX}还没开始运动：手表还没开始记录，没有任何运动数据。"
-        parts = [f"运动：{self.profile.label}", f"阶段：{self.phase_label()}"]
+            return (
+                f"{STATUS_PREFIX}{'；'.join([clock, *asked])}；"
+                "还没开始运动：手表还没开始记录，没有任何运动数据。"
+            )
+        parts = [clock, f"运动：{self.profile.label}", f"阶段：{self.phase_label()}"]
         parts.append(f"workout 状态：{self.state.latest.state}")
         if self.state.started:
-            parts.append(f"已用时约 {say_duration(self.state.elapsed_s)}")
+            parts.append(f"手表已计时约 {say_duration(self.state.elapsed_s)}")
+            parts += self._moving_parts()
         if (d := self.state.distance_m) is not None:
             parts.append(f"已完成约 {say_distance(d)}")
         if self.state.splits:
@@ -271,13 +371,40 @@ class CoachBrain:
         now = self._clock()
         if self.queue.is_quiet(now):
             parts.append(f"用户要求安静，还剩约 {say_duration(self.queue.quiet_remaining_s(now))}")
-        metrics = self.get_metrics()
-        if metrics["available"] and metrics.get("live_readings", True) and metrics.get("spoken"):
-            readings = "，".join(f"{label} {text}" for label, text in metrics["spoken"].items())
+        if terrain := describe_climb(self.state.climb(CLIMB_WINDOW_S)):
+            parts.append(f"地形：{terrain}")
+        parts += asked
+        if readings := self.readings():
             parts.append(f"手表此刻的实时数据：{readings}")
         else:
             parts.append("手表此刻没有心率等实时数据")
         return STATUS_PREFIX + "；".join(parts) + "。"
+
+    def local_time(self) -> str:
+        return datetime.fromtimestamp(self._wall_ms() / 1000, self.tz).strftime("%H:%M:%S")
+
+    def readings(self) -> str | None:
+        """The live readings as said aloud, or None while there are none."""
+        metrics = self.get_metrics()
+        if metrics["available"] and metrics.get("live_readings", True) and metrics.get("spoken"):
+            return "，".join(f"{label} {text}" for label, text in metrics["spoken"].items())
+        return None
+
+    def _moving_parts(self) -> list[str]:
+        """The watch may have started well before the athlete did (COCH-22: in a car)."""
+        if self.profile is None or self.profile.moving is None:
+            return []
+        since = self.state.moving_since_s
+        if since is None:
+            return [
+                f"但还没看到用户在{self.profile.label}（步频、速度对不上），实际运动时间还没开始算"
+            ]
+        if since < JOINED_AT_START_S:
+            return []
+        return [
+            f"用户从手表计时 {say_duration(since)} 起才真正开始{self.profile.label}，"
+            f"实际{self.profile.label}了约 {say_duration(self.state.effort_s)}"
+        ]
 
     def get_metrics(self) -> dict[str, Any]:
         out = self.state.snapshot()
@@ -287,6 +414,9 @@ class CoachBrain:
             out.pop("pace_per_km", None)
             if (speed := out.get("speed_mps")) is not None:
                 out["speed_kmh"] = round(speed_kmh(speed), 1)
+        if climb := self.state.climb(CLIMB_WINDOW_S):
+            out["alt_change_1min_m"] = round(climb.alt_change_m, 1)
+            out["grade_pct"] = round(climb.grade * 100, 1)
         # how the profile says each metric, so the model reads e.g. km/h on a bike
         spoken = {
             spec.label: text
@@ -308,6 +438,10 @@ class CoachBrain:
             "state": str(self.state.latest.state) if self.state.latest else None,
             "data_current": not self.state.is_stale(),
         }
+        if self.profile.moving is not None:
+            since = self.state.moving_since_s
+            out["moving_since_elapsed_s"] = None if since is None else round(since, 1)
+            out["active_s"] = round(self.state.effort_s, 1)
         if (d := self.state.distance_m) is not None:
             out["distance_m"] = round(d, 1)
         if goal := self.targets.get(GOAL_KEY):

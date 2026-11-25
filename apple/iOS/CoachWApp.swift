@@ -67,11 +67,31 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             Task { await mirror.startOnWatch(activity) }
             return #"{"ok":true,"status":"waking the watch"}"#
         }
+        // the coach's pause / resume / end tools (COCH-22): same as the dashboard buttons
+        voice.controlProvider = { action in
+            guard mirror.isActive else { return #"{"ok":false,"reason":"no workout is running"}"# }
+            diag("phone", "coach asked to \(action) the workout")
+            switch action {
+            case "pause":
+                if mirror.isPaused { return #"{"ok":true,"status":"already paused"}"# }
+                mirror.pause()
+            case "resume":
+                if !mirror.isPaused { return #"{"ok":true,"status":"already running"}"# }
+                mirror.resume()
+            case "end":
+                mirror.end()
+            default:
+                return #"{"ok":false,"reason":"unknown action"}"#
+            }
+            return #"{"ok":true}"#
+        }
         let places = PlaceFinder.shared
         places.watchFix = { mirror.latest?.location }
         voice.placesProvider = { await places.lookAround(query: $0) }
         // What the athlete says while the coach cannot hear it is kept and passed on (spec 7.4).
         let offline = OfflineVoiceRecorder.shared
+        // the coach's microphone could not start while the offline recorder held it (COCH-22)
+        voice.onWillEnableMicrophone = { offline.stopRecording() }
         let keepOfflineSpeech: @MainActor (Bool) -> Void = { tellCoach in
             Task {
                 guard let text = await offline.stopAndTranscribe() else { return }

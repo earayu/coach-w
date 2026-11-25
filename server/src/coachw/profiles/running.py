@@ -6,7 +6,14 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from coachw.coach.director import GOAL_KEY
-from coachw.coach.events import Alert, SplitTrend, Sustained, WindowVsBaseline, WindowVsTarget
+from coachw.coach.events import (
+    Alert,
+    Grade,
+    SplitTrend,
+    Sustained,
+    WindowVsBaseline,
+    WindowVsTarget,
+)
 from coachw.coach.format import (
     format_pace_seconds,
     pace_seconds,
@@ -41,8 +48,22 @@ HR_EMERGENCY = "hr_emergency_bpm"
 TARGET_SPEED = "target_speed_mps"
 
 PACE_MIN_S = 150  # 2'30" per km
+# Looks like running: a running cadence at a speed feet can do. A car reads tens of km/h at a
+# wrist's idle cadence (COCH-22). Without a cadence reading, speed alone decides.
+RUN_MIN_CADENCE_SPM = 120.0
+RUN_SPEED_MPS = (1.5, 7.5)
+CLIMB_GRADE = 0.03
 PACE_MAX_S = 900  # 15'00" per km
 GOAL_MAX_KM = 100
+
+
+def _running(values: Mapping[str, float]) -> bool:
+    speed, cadence = values.get("speed_mps"), values.get("cadence_spm")
+    if speed is not None and speed > RUN_SPEED_MPS[1]:
+        return False
+    if cadence is not None:
+        return cadence >= RUN_MIN_CADENCE_SPM
+    return speed is not None and speed >= RUN_SPEED_MPS[0]
 
 
 def _defaults(athlete: Athlete) -> dict[str, float]:
@@ -159,6 +180,7 @@ RUNNING = ActivityProfile(
         MetricSpec("stride_m", "步幅", lambda v: f"{v:.2f} 米"),
         MetricSpec("gct_ms", "触地时间", lambda v: f"{v:.0f} 毫秒"),
         MetricSpec("vo_cm", "垂直振幅", lambda v: f"{v:.1f} 厘米"),
+        MetricSpec("alt_m", "海拔", lambda v: f"{v:.0f} 米"),
     ),
     phases=(
         Phase("warmup", "热身", after_s=0),
@@ -267,10 +289,32 @@ RUNNING = ActivityProfile(
                 "可能开始疲劳、跑姿走样。提醒用户身体微微前倾、轻快落地。"
             ),
         ),
+        Grade(
+            kind="uphill",
+            grade=CLIMB_GRADE,
+            window_s=60,
+            alert=Alert(CuePriority.CORRECTION, 300, 20, None, "上坡", key="terrain"),
+            facts=lambda g, rise: (
+                f"最近一分钟在上坡，海拔升了 {rise:.0f} 米，坡度约 {g * 100:.0f}%。"
+                "上坡心率升高、配速变慢是正常的。提醒用户步子收小、保持步频、"
+                "按用力感跑，不追配速。"
+            ),
+        ),
+        Grade(
+            kind="downhill",
+            grade=-CLIMB_GRADE,
+            window_s=60,
+            alert=Alert(CuePriority.CORRECTION, 300, 20, None, "下坡", key="terrain"),
+            facts=lambda g, rise: (
+                f"最近一分钟在下坡，海拔降了 {-rise:.0f} 米，坡度约 {-g * 100:.0f}%。"
+                "提醒用户身体别后仰、步子别迈太大，用小步快频控制速度，保护膝盖。"
+            ),
+        ),
     ),
+    # a running coach talks more than a walk's companion (COCH-22: "too quiet")
     cadence=Cadence(
-        companion_s=240,
-        stable_multiplier=1.5,
+        companion_s=120,
+        stable_multiplier=1.25,
         stable_after_s=300,
         max_per_minute=3,
         min_gap_s=10,
@@ -281,8 +325,13 @@ RUNNING = ActivityProfile(
         "做一次谈话测试：请用户说一句完整的话，看看还能不能轻松说话。",
         "提醒用户放松肩膀，手臂自然前后摆动。",
         "简单鼓励用户，保持现在的节奏。",
+        "提醒一个跑姿要点：落地在身体正下方，脚步轻，不要往前跨大步。",
+        "根据现在的阶段，告诉用户这一段该怎么跑、用力感大概多少。",
+        "提醒用户调整呼吸节奏，比如两步一吸两步一呼，别憋气。",
+        "提醒用户核心收紧、腰背挺直，眼睛看前方十几米。",
     ),
     default_targets=_defaults,
     describe_targets=_describe,
     tools=(ADJUST_TARGET_PACE,),
+    moving=_running,
 )

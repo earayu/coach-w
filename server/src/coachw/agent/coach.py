@@ -9,9 +9,10 @@ from typing import Any
 
 from livekit.agents import Agent, RunContext, function_tool, llm
 
+from coachw.agent.memory import AthleteMemory
 from coachw.coach.brain import QUIET_MAX_MIN, CoachBrain
 from coachw.profiles.base import ProfileTool
-from coachw.session import STARTABLE_ACTIVITIES
+from coachw.session import CONTROL_ACTIONS, STARTABLE_ACTIVITIES
 
 logger = logging.getLogger("coachw.agent")
 
@@ -24,14 +25,21 @@ INSTRUCTIONS = """\
 - 不朗读 markdown、列表符号、英文字段名或单位缩写。
 - 用户随时会打断你，被打断就停下来听。
 - 用户的一句话可能被切成几段先后到达，把连着的几段当成一句话理解。只有话明显说到一半（比如"这是一个产品上的"）时，才用一两个字轻轻应一声等他说完；"感觉还可以"这样完整的短句要正常回应。不要反复用同一句口头禅，尤其不要一直说"嗯，你说"。
-- 你的话被打断，但用户其实没说出什么内容（只有杂音、呼吸声或听不清）时，接着把刚才被打断的话说完，不要问"你说"。
+- 你的话被打断，但用户其实没说出什么内容（只有杂音、呼吸声或听不清）时，从被打断的地方接着把没说完的半句说完，不要问"你说"；已经说出口的部分不要从头再说一遍。
+- 用户没说话时不要接话：没有听到用户的话，就不要说"好，收到""我在"之类的回应。
 
 像一个聪明、靠谱的真人教练那样对话：
 - 认真回应用户说的每一件事。跑步、训练、身体感受、装备、天气或者随便闲聊，都正常、有内容地回答，不要用"专心运动"之类的话把问题挡回去。
 - 记住这次对话里用户说过的话。用户让你复述、回忆或者问"我刚才说了什么"，就照这次对话的内容把他的原意复述出来。
 - 不要把同一句话说两遍；上一句没有回答到点子上，就换个说法直接回答。用户追问同一个问题，说明上次的回答没让他满意：先接住他的追问，换个角度或多给一点理由，绝不一字不差地重复自己上一句。
+- 用户只回一个"对""嗯""好"时，简单应一声或接着往下聊，不要把你上一句话再说一遍。
+- 回应和确认的话也要换着说，不要每次都用同一句（比如"收到，我会继续盯着心率，有情况及时提醒你"）。用户夸你，简单谢一句就行。
 - 被问是什么模型、谁做的、用的什么技术：说你是 coach-w 的语音教练，底层用的哪家模型不方便透露。被追问时每次换个说法，可以简单说一句为什么不说，再自然地把话题带回运动上，不要复读。
 - 做不到的事直说做不到，并说清楚现在能做什么。
+- 你能帮用户操作手表：开始运动（start_workout）、暂停（pause_workout）、继续（resume_workout）、结束（end_workout）。用户要你做这些时直接调用，不要让他自己去按。结束运动不能撤回：只有用户明确说结束（比如"结束吧""今天就跑到这"）才调用，拿不准就先问一句。
+- 用户让你之后做某件事（比如"每分钟报一次心率""每公里提醒我喝水""别叫我加油"）时，调用 remember_request 记下来：有时间间隔就带上 every_minutes；以后每次运动都要这样的，lasting 传 true。到时间了系统会用【教练提示】叫你。用户说不用了就调用 forget_request。只口头答应不调用，你过一会儿就会忘。
+- 【运动状态】里"用户交代过"列着这些要求，说话时照着做。
+- 【运动状态】里有现在的时间。用户问几点了、多久了，或者觉得你反应慢、你没听清他说了什么时，按时间理解，不要猜。
 - 用户问自己在哪、附近有什么、去哪找厕所或补给、前面是什么地方时，调用 look_around（可以带要找的东西），照结果里的地名、距离和方向回答；没有结果就直说找不到，不要编地名。
 
 像国内专业的教练那样带练：
@@ -54,6 +62,8 @@ INSTRUCTIONS = """\
 用常识看数据：
 - 你懂运动生理和训练常识，知道跑步、骑行、步行等运动正常的配速或速度、步频、心率大概什么样，以及它们之间怎么关联。
 - 每次拿到数据，先想一想合不合常识、和用户正在做的运动对不对得上。手表上选的运动可能和用户实际在做的不一样，传感器也会出错。
+- 【运动状态】写着用户从手表计时某个时间起才真正开始运动时，按实际运动的时间理解进度和热身，不要把之前那段（比如开车、走过去）算进去。
+- 有地形信息（上坡、下坡、坡度、海拔变化）时，结合它一起看：上坡时心率升高、配速变慢、触地时间变长是正常的，先说是坡的原因，再给上坡怎么跑的建议；下坡提醒控速、保护膝盖。
 - 数据不合常识时直说哪里不对，问用户怎么回事，不要照着念，更不要夸。【教练提示】里的"鼓励""夸奖"只是默认语气，和常识冲突时以常识为准。
 
 你一直看得到用户手表上的数据：
@@ -82,7 +92,7 @@ INSTRUCTIONS = """\
 # Only true while the server keeps transcripts (COACHW_TRANSCRIPT_DIR): the developers read the
 # feedback there (COCH-15, the coach kept saying it could not note anything down).
 FEEDBACK_KEPT = """
-产品意见：用户提产品意见、改进点或者让你"记下来"时，这次对话的全文会保存下来给开发团队看。告诉他"记下了"，再用一句话复述要点，确认没听错。
+产品意见：用户提产品意见、改进点或者让你"记下来"时，调用 note_feedback 把要点记下来给开发团队，再告诉他"记下了"，用一句话复述要点，确认没听错。用户临时交代你做的事（比如每分钟报心率）不是产品意见，用 remember_request。
 """
 
 FEEDBACK_NOT_KEPT = """
@@ -161,6 +171,10 @@ def profile_tool(brain: CoachBrain, spec: ProfileTool) -> llm.RawFunctionTool:
 PlaceLookup = Callable[[str], Awaitable[dict[str, Any]]]
 # Asks the athlete's phone to start a workout on the watch (`coach.start`, spec 7.6).
 WorkoutStarter = Callable[[str], Awaitable[dict[str, Any]]]
+# Asks the athlete's phone to pause, resume or end the workout (`coach.control`, spec 7.6).
+WorkoutControl = Callable[[str], Awaitable[dict[str, Any]]]
+# The same control asked twice this soon (tool and words both heard it) is one request.
+CONTROL_DEDUP_S = 10.0
 # A second request this soon after the first is the same start (tool and words both asked).
 START_DEDUP_S = 30.0
 
@@ -173,6 +187,8 @@ class CoachAgent(Agent):
         history: Sequence[tuple[str, str]] = (),
         places: PlaceLookup | None = None,
         start: WorkoutStarter | None = None,
+        control: WorkoutControl | None = None,
+        memory: AthleteMemory | None = None,
     ) -> None:
         self._base_instructions = instructions(keeps_transcript, history)
         super().__init__(instructions=self._base_instructions)
@@ -180,6 +196,9 @@ class CoachAgent(Agent):
         self._places = places
         self._start = start
         self._start_asked_at: float | None = None
+        self._control = control
+        self._control_asked: tuple[str, float] | None = None
+        self.memory = memory
         self._base_tools = list(self.tools)
         self._status_id: str | None = None
         self._status_lock = asyncio.Lock()
@@ -304,3 +323,98 @@ class CoachAgent(Agent):
         if not result.get("ok"):
             self._start_asked_at = None
         return result
+
+    async def request_control(self, action: str) -> dict[str, Any]:
+        """Pause, resume or end the workout on the watch, once: the tool and the athlete's own
+        words may both ask (COCH-22)."""
+        if action not in CONTROL_ACTIONS:
+            return {"ok": False, "reason": f"unknown action, use one of {CONTROL_ACTIONS}"}
+        if not self.brain.workout_in_progress():
+            return {"ok": False, "reason": "no workout is running"}
+        if self._control is None:
+            return {"ok": False, "reason": "phone not connected"}
+        now = time.monotonic()
+        last = self._control_asked
+        if last and last[0] == action and now - last[1] < CONTROL_DEDUP_S:
+            return {"ok": True, "status": "already asked the watch"}
+        self._control_asked = (action, now)
+        result = await self._control(action)
+        if not result.get("ok"):
+            self._control_asked = None
+        return result
+
+    @function_tool()
+    async def pause_workout(self, context: RunContext) -> str:
+        """暂停用户手表上正在进行的运动。用户说"暂停""帮我暂停一下""等一下我停一停"时调用。"""
+        result = await self.request_control("pause")
+        logger.info("tool pause_workout called ok=%s", result.get("ok"))
+        return as_json(result)
+
+    @function_tool()
+    async def resume_workout(self, context: RunContext) -> str:
+        """继续用户手表上暂停的运动。用户说"继续""接着跑""恢复"时调用。"""
+        result = await self.request_control("resume")
+        logger.info("tool resume_workout called ok=%s", result.get("ok"))
+        return as_json(result)
+
+    @function_tool()
+    async def end_workout(self, context: RunContext) -> str:
+        """结束并保存用户手表上的这次运动，不能撤回。
+
+        只有用户明确说要结束（"结束吧""今天就到这""停止运动"）时才调用；拿不准就先问他是不是要结束。
+        成功后调用 end_workout_summary 做总结。
+        """
+        result = await self.request_control("end")
+        logger.info("tool end_workout called ok=%s", result.get("ok"))
+        return as_json(result)
+
+    @function_tool()
+    async def remember_request(
+        self, context: RunContext, text: str, every_minutes: float = 0, lasting: bool = False
+    ) -> str:
+        """记下用户让你之后要做的事，到时间系统会提醒你去做。
+
+        用户说"每分钟报一次心率""每两公里提醒我补水""以后别叫我加油"这类要求时调用。
+
+        Args:
+            text: 用户的要求，用一句话写清楚要做什么，例如"报心率"。
+            every_minutes: 每隔几分钟做一次；不是定时的要求传 0。
+            lasting: 以后每次运动都要这样时传 true；只管这次运动传 false。
+        """
+        every_s = every_minutes * 60 if every_minutes and every_minutes > 0 else None
+        request = self.brain.add_request(text, every_s=every_s, lasting=lasting)
+        if request is None:
+            return as_json({"ok": False, "reason": "empty request or too many requests"})
+        self._remember()
+        logger.info("tool remember_request called every=%s lasting=%s", every_s, lasting)
+        return as_json({"ok": True, "id": request.id, "every_s": request.every_s})
+
+    @function_tool()
+    async def forget_request(self, context: RunContext, request_id: int = 0) -> str:
+        """取消用户之前交代的要求。
+
+        Args:
+            request_id: 【运动状态】里"用户交代过"的编号（#后面的数字）；传 0 取消全部。
+        """
+        if request_id:
+            ok = self.brain.requests.remove(request_id)
+        else:
+            ok = self.brain.requests.clear() > 0
+        self._remember()
+        logger.info("tool forget_request called ok=%s", ok)
+        return as_json({"ok": ok})
+
+    @function_tool()
+    async def note_feedback(self, context: RunContext, text: str) -> str:
+        """把用户提的产品意见或改进点记下来，给开发团队看。
+
+        Args:
+            text: 用一两句话写清楚用户的意见，保留他的原意。
+        """
+        ok = self.memory.note_feedback(text) if self.memory and text.strip() else False
+        logger.info("tool note_feedback called ok=%s", ok)
+        return as_json({"ok": ok})
+
+    def _remember(self) -> None:
+        if self.memory is not None:
+            self.memory.save(self.brain.requests.items)

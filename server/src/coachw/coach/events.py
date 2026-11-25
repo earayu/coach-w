@@ -29,6 +29,9 @@ class CoachEvent:
     ttl_s: float
     haptic: Haptic | None = None
     watch_text: str | None = None
+    optional: bool = False
+    """A wake-up, not a line: the cue writer decides whether there is anything worth saying
+    (spec 4.2.2), and nothing is said without one."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +201,32 @@ class SplitTrend:
         return self.alert.event(self.kind, self.facts(vals, splits), key=key)
 
 
+@dataclass(frozen=True, slots=True)
+class Grade:
+    """Climbing (or descending) at least `grade` (e.g. 0.03 = 3 %) over the last `window_s`.
+
+    `facts(grade, altitude_change_m)` words the event. Its sign follows `grade`: a negative
+    threshold watches descents.
+    """
+
+    kind: str
+    grade: float
+    window_s: float
+    alert: Alert
+    facts: Callable[[float, float], str]
+
+    def evaluate(self, ctx: RuleContext) -> CoachEvent | None:
+        climb = ctx.state.climb(self.window_s)
+        if climb is None:
+            return None
+        hit = climb.grade >= self.grade if self.grade > 0 else climb.grade <= self.grade
+        return (
+            self.alert.event(self.kind, self.facts(climb.grade, climb.alt_change_m))
+            if hit
+            else None
+        )
+
+
 class EventEngine:
     """Evaluates a profile's rules against the current state."""
 
@@ -208,7 +237,8 @@ class EventEngine:
         # Old or paused data says nothing about the athlete right now: stay silent.
         if ctx.state.is_stale() or not ctx.state.is_running:
             return []
-        elapsed = ctx.state.elapsed_s
+        # warm-up and similar delays count from when the athlete started moving (COCH-22)
+        elapsed = ctx.state.effort_s
         return [
             e
             for rule in self.rules

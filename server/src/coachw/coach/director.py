@@ -20,6 +20,9 @@ GOAL_KEY = "goal_distance_m"
 # Tell the athlete once when the watch has gone quiet this long during a running workout.
 DATA_LOST_AFTER_S = 30.0
 
+# Moving this long after the watch started means the athlete started the watch early.
+LATE_START_S = 60.0
+
 MILESTONE_TTL_S = 20.0
 COMPANION_TTL_S = 30.0
 
@@ -59,7 +62,8 @@ class Director:
         distance = state.distance_m
         current = None
         for phase in self.profile.phases:
-            by_time = phase.after_s is not None and state.elapsed_s >= phase.after_s
+            # by time since the athlete started moving, not since the watch started (COCH-22)
+            by_time = phase.after_s is not None and state.effort_s >= phase.after_s
             by_goal = (
                 phase.goal_fraction is not None
                 and goal
@@ -95,10 +99,15 @@ class Director:
         self._fired.discard("data_lost")
         if not state.is_running:
             return []
+        if not state.moving_started:
+            # before the athlete really starts (still in the car) there is nothing to narrate,
+            # and a kilometre driven is not a split worth announcing later (COCH-22)
+            self._splits_seen = len(state.splits)
+            return []
 
         events: list[CoachEvent] = []
-        if state.joined_at_start:
-            events += self._once("start", self._start_facts(targets), Haptic.START, "开始")
+        if state.joined_at_start and state.moving_started:
+            events += self._once("start", self._start_facts(state, targets), Haptic.START, "开始")
         events += self._phase_events(state, targets)
         events += self._split_events(state)
         events += self._time_mark_events(state)
@@ -117,10 +126,16 @@ class Director:
         self._fired.add(kind)
         return [_milestone(kind, facts, haptic, text)]
 
-    def _start_facts(self, targets: Mapping[str, float]) -> str:
+    def _start_facts(self, state: MetricsState, targets: Mapping[str, float]) -> str:
         goals = self.profile.describe_targets(targets)
         goal_text = f"今天的目标：{'，'.join(goals)}。" if goals else ""
-        return f"{self.profile.label}刚刚开始。{goal_text}{self.profile.start_hint}"
+        late = ""
+        if (since := state.moving_since_s) is not None and since >= LATE_START_S:
+            late = (
+                f"手表已经计时 {say_duration(since)}，用户现在才真正开始{self.profile.label}，"
+                "之前那段不算在这次运动里。"
+            )
+        return f"{self.profile.label}刚刚开始。{late}{goal_text}{self.profile.start_hint}"
 
     def _phase_events(self, state: MetricsState, targets: Mapping[str, float]) -> list[CoachEvent]:
         phase = self.current_phase(state, targets)

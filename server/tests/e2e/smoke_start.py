@@ -4,7 +4,9 @@ Joins as the athlete without sending any metrics, so the coach sees no workout y
 `coach.start` RPC like the phone does; asks with macOS `say` to start a run; and once the coach
 has asked the "phone" to start, streams synthetic frames from 0 s like a watch that just started.
 Checks that the greeting is the pre-workout one (no numbers), that `start_workout` reached the
-phone with `running`, and that the coach announces the start.
+phone with `running`, and that the coach announces the start. Then (COCH-22) asks for the heart
+rate every half minute and expects it said again unasked, and pauses and resumes by voice through
+`coach.control`.
 
 Usage (from server/):
   uv run python tests/e2e/smoke_start.py --invite <code> [--api http://127.0.0.1:8000]
@@ -30,12 +32,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from smoke_voice import ARTIFACTS, RATE, SILENCE, peak, say, speak  # noqa: E402
 
 from coachw.protocol import METRICS_TOPIC  # noqa: E402
-from coachw.session import START_METHOD  # noqa: E402
+from coachw.session import CONTROL_METHOD, START_METHOD  # noqa: E402
 
 DIGITS = re.compile(r"[0-9]|[一二三四五六七八九十百]+(分|秒|公里|次|步)")
 
 
-def frame(seq: int, elapsed: float) -> bytes:
+HR = re.compile(r"118|一百一十八")
+
+
+def frame(seq: int, elapsed: float, state: str = "running") -> bytes:
     now = int(time.time() * 1000)
     return json.dumps(
         {
@@ -44,7 +49,7 @@ def frame(seq: int, elapsed: float) -> bytes:
             "ts": now,
             "phone_ts": now,
             "activity": "running",
-            "state": "running",
+            "state": state,
             "elapsed_s": elapsed,
             "hr_bpm": 118,
             "distance_m": round(2.9 * elapsed, 1),
@@ -67,6 +72,8 @@ async def main(api_url: str, invite: str) -> int:
     audio: list[tuple[float, int]] = []
     said: list[tuple[float, str]] = []
     starts: list[str] = []
+    controls: list[str] = []
+    paused = False
     watch_started = asyncio.Event()
 
     @room.on("track_subscribed")
@@ -95,8 +102,16 @@ async def main(api_url: str, invite: str) -> int:
         watch_started.set()
         return json.dumps({"ok": True, "status": "waking the watch"})
 
+    async def _on_control(data: rtc.RpcInvocationData) -> str:
+        nonlocal paused
+        action = json.loads(data.payload).get("action", "")
+        controls.append(action)
+        paused = action == "pause"
+        return json.dumps({"ok": True})
+
     await room.connect(session["server_url"], session["token"])
     room.local_participant.register_rpc_method(START_METHOD, _on_start)
+    room.local_participant.register_rpc_method(CONTROL_METHOD, _on_control)
     source = rtc.AudioSource(RATE, 1)
     track = rtc.LocalAudioTrack.create_audio_track("mic", source)
     await room.local_participant.publish_track(
@@ -106,11 +121,15 @@ async def main(api_url: str, invite: str) -> int:
     async def watch():
         await watch_started.wait()
         await asyncio.sleep(3)  # the watch wakes up
-        seq, t0 = 0, time.monotonic()
+        seq, t0, elapsed = 0, time.monotonic(), 0.0
         while True:
             seq += 1
+            if not paused:
+                elapsed = round(time.monotonic() - t0, 1)
             await room.local_participant.publish_data(
-                frame(seq, round(time.monotonic() - t0, 1)), reliable=True, topic=METRICS_TOPIC
+                frame(seq, elapsed, "paused" if paused else "running"),
+                reliable=True,
+                topic=METRICS_TOPIC,
             )
             await asyncio.sleep(1)
 
@@ -151,6 +170,34 @@ async def main(api_url: str, invite: str) -> int:
     after = since(t)
     checks["coach_spoke_after_the_start"] = bool(after)
 
+    # COCH-22: "report my heart rate every minute" was said once and forgotten
+    t = time.monotonic()
+    await speak(source, say("以后每半分钟给我报一次心率。"))
+    await until_quiet(30)
+    asked_at = time.monotonic()
+    await asyncio.sleep(75)
+    await until_quiet(30)
+    reports = [text for ts, text in said if ts >= asked_at + 5 and HR.search(text)]
+    checks["heart_rate_reported_again_unasked"] = len(reports) >= 1
+    request_talk = since(t)
+
+    # COCH-22: "pause it for me" got "I can't control the watch"
+    t = time.monotonic()
+    await speak(source, say("帮我暂停一下。"))
+    end = time.monotonic() + 20
+    while time.monotonic() < end and "pause" not in controls:
+        await asyncio.sleep(0.2)
+    checks["pause_reached_the_phone"] = "pause" in controls
+    await until_quiet(30)
+    await asyncio.sleep(3)
+    await speak(source, say("好了，继续跑。"))
+    end = time.monotonic() + 20
+    while time.monotonic() < end and "resume" not in controls:
+        await asyncio.sleep(0.2)
+    checks["resume_reached_the_phone"] = "resume" in controls
+    await until_quiet(30)
+    control_talk = since(t)
+
     watch_task.cancel()
     await room.disconnect()
     result = {
@@ -159,6 +206,9 @@ async def main(api_url: str, invite: str) -> int:
         "greeting": greeting,
         "after_start_request": after,
         "start_calls": starts,
+        "after_heart_rate_request": request_talk,
+        "after_pause_and_resume": control_talk,
+        "control_calls": controls,
     }
     ARTIFACTS.mkdir(exist_ok=True)
     (ARTIFACTS / "smoke_start.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))

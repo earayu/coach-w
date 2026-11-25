@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,7 @@ from typing import Any
 logger = logging.getLogger("coachw.agent")
 
 CUE_PREFIX = "【教练提示】"
+PLACEHOLDER = re.compile(r"^\s*\[(?:ERROR|工具调用)")
 # the status summary opens with "【运动状态，仅供参考，不要回复】"
 STATUS_PREFIX = "【运动状态"
 
@@ -33,7 +35,8 @@ def transcript_dir(env: dict[str, str] | os._Environ[str] = os.environ) -> Path 
 def classify(role: str | None, text: str) -> str | None:
     """Transcript kind of a conversation item; None for items that are not conversation."""
     if role == "assistant":
-        return "coach"
+        # "[ERROR: ...]", "[工具调用]": the model's placeholder, not something the coach said
+        return "glitch" if PLACEHOLDER.match(text) else "coach"
     if role == "user":
         if text.startswith(CUE_PREFIX):
             return "cue"

@@ -18,6 +18,8 @@ HR_CEILING_SHARE = 0.90
 HR_EMERGENCY_SHARE = 0.97
 
 WARMUP_S = 600.0
+# Looks like riding: rolling faster than walking, slower than a car on a road (COCH-22).
+RIDE_SPEED_MPS = (2.0, 25.0)
 
 HR_CEILING = "hr_ceiling_bpm"
 HR_EMERGENCY = "hr_emergency_bpm"
@@ -139,4 +141,8 @@ CYCLING = ActivityProfile(
     start_hint="一句话打气，提醒先轻松骑、注意路况。",
     end_hint="用一句话总结，提醒补水、拉伸，再问用户这次骑下来感觉怎么样。",
     speed_as_pace=False,
+    moving=lambda values: (
+        (speed := values.get("speed_mps")) is not None
+        and RIDE_SPEED_MPS[0] <= speed <= RIDE_SPEED_MPS[1]
+    ),
 )

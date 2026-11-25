@@ -1,0 +1,137 @@
+"""The athlete's requests, the coach's wake-ups and its sense of time (spec 4.2.2, COCH-22)."""
+
+import asyncio
+import json
+from datetime import UTC, datetime, timedelta
+
+from test_brain import Session
+
+from coachw.agent.coach import CoachAgent
+from coachw.agent.cue_writer import CueWriter
+from coachw.agent.memory import AthleteMemory
+from coachw.coach.requests import MIN_EVERY_S, Requests
+from coachw.protocol import CuePriority
+
+
+def test_timed_requests_come_due_and_repeat():
+    r = Requests()
+    every_min = r.add("报心率", every_s=60, lasting=False, now=0)
+    r.add("别叫我加油", every_s=None, lasting=True, now=0)
+    assert r.due(30) == []
+    assert r.due(60) == [every_min]
+    assert r.due(61) == [] and r.due(120) == [every_min]
+    assert r.add("报配速", every_s=5, lasting=False, now=0).every_s == MIN_EVERY_S
+    assert r.add("  ", every_s=None, lasting=False, now=0) is None
+    assert [x.describe() for x in r.items][:2] == [
+        "#1「报心率」（每 1 分钟）",
+        "#2「别叫我加油」（长期）",
+    ]
+
+
+def test_a_request_is_said_when_due_with_the_current_readings():
+    s = Session()
+    s.run.run(5, hr=150)
+    s.brain.add_request("报心率", every_s=60, lasting=False)
+    s.run.run(120, hr=150, speed=1.5)
+    due = [d for d in s.deliveries if d.cue.event.kind == "request"]
+    assert len(due) == 2
+    assert "报心率" in due[0].instructions and "心率 150" in due[0].instructions
+    assert due[0].cue.priority is CuePriority.MILESTONE
+
+
+def test_requests_wait_while_paused():
+    from coachw.protocol import WorkoutState
+
+    s = Session()
+    s.run.run(5)
+    s.brain.add_request("报心率", every_s=60, lasting=False)
+    s.run.run(120, state=WorkoutState.PAUSED)
+    assert not [d for d in s.deliveries if d.cue.event.kind == "request"]
+
+
+def test_the_status_carries_the_time_and_the_requests():
+    s = Session()
+    assert "现在时间" in s.brain.status_summary()
+    s.run.run(5)
+    s.brain.add_request("每公里提醒我喝水", every_s=None, lasting=False)
+    status = s.brain.status_summary()
+    assert "现在时间" in status and "用户交代过：#1「每公里提醒我喝水」" in status
+
+
+def test_check_ins_only_with_a_writer_and_after_silence():
+    s = Session()
+    s.run.run(300, speed=1.5)
+    assert not [d for d in s.deliveries if d.cue.event.kind == "check_in"]
+    s = Session()
+    s.brain.check_in_s = 75
+    s.run.run(300, speed=1.5)
+    checks = [d for d in s.deliveries if d.cue.event.kind == "check_in"]
+    assert checks and all(d.optional for d in checks)
+
+
+def check_in_delivery():
+    s = Session()
+    s.brain.check_in_s = 75
+    s.run.run(300, speed=1.5)
+    return s, next(d for d in s.deliveries if d.cue.event.kind == "check_in")
+
+
+def test_the_writer_may_answer_a_check_in_with_nothing():
+    s, delivery = check_in_delivery()
+
+    async def skip(_system, _prompt):
+        return "SKIP"
+
+    async def line(_system, _prompt):
+        return "上坡了，步子收小一点。"
+
+    async def fail(_system, _prompt):
+        return None
+
+    assert asyncio.run(CueWriter(s.brain, skip).instructions_for(delivery)) is None
+    assert asyncio.run(CueWriter(s.brain, fail).instructions_for(delivery)) is None
+    said = asyncio.run(CueWriter(s.brain, line).instructions_for(delivery))
+    assert "上坡了" in said
+
+
+class Clock:
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+def test_memory_keeps_lasting_requests_and_recent_workout_ones(tmp_path):
+    clock = Clock(datetime(2026, 11, 24, 12, 0, tzinfo=UTC))
+    memory = AthleteMemory(tmp_path, "athlete-1", clock=clock)
+    s = Session()
+    s.brain.add_request("报心率", every_s=60, lasting=False)
+    s.brain.add_request("别叫我加油", every_s=None, lasting=True)
+    memory.save(s.brain.requests.items)
+    clock.now += timedelta(hours=1)
+    assert [r.text for r in AthleteMemory(tmp_path, "athlete-1", clock=clock).load()] == [
+        "报心率",
+        "别叫我加油",
+    ]
+    clock.now += timedelta(hours=3)
+    later = AthleteMemory(tmp_path, "athlete-1", clock=clock).load()
+    assert [r.text for r in later] == ["别叫我加油"]
+    assert AthleteMemory(tmp_path, "someone-else", clock=clock).load() == []
+
+
+def test_the_coach_tools_remember_forget_and_note_feedback(tmp_path):
+    s = Session()
+    memory = AthleteMemory(tmp_path, "athlete-1")
+    agent = CoachAgent(s.brain, keeps_transcript=True, memory=memory)
+    ok = json.loads(asyncio.run(agent.remember_request(None, "报心率", every_minutes=1)))
+    assert ok["ok"] and ok["every_s"] == 60
+    assert [r.text for r in AthleteMemory(tmp_path, "athlete-1").load()] == ["报心率"]
+    assert json.loads(asyncio.run(agent.forget_request(None, 0)))["ok"] is True
+    assert AthleteMemory(tmp_path, "athlete-1").load() == []
+    assert json.loads(asyncio.run(agent.note_feedback(None, "教练应该能帮我暂停")))["ok"]
+    [day] = (tmp_path / "feedback").iterdir()
+    record = json.loads(day.read_text(encoding="utf-8"))
+    assert record["text"] == "教练应该能帮我暂停" and record["athlete_id"] == "athlete-1"
+    no_memory = CoachAgent(s.brain)
+    assert json.loads(asyncio.run(no_memory.note_feedback(None, "x")))["ok"] is False

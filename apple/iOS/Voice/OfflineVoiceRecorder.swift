@@ -21,6 +21,8 @@ final class OfflineVoiceRecorder: NSObject {
     }
 
     private var state: State = .idle
+    /// A recording stopped (to hand the microphone to the coach) but not transcribed yet.
+    private var pending: (url: URL, duration: TimeInterval, began: Date)?
     private let directory = URL.applicationSupportDirectory.appending(path: "offline-voice", directoryHint: .isDirectory)
 
     /// Shorter recordings hold nothing worth transcribing.
@@ -62,18 +64,31 @@ final class OfflineVoiceRecorder: NSObject {
         }
     }
 
-    /// Stops and transcribes. Returns the text said offline, or nil when there was nothing.
-    func stopAndTranscribe() async -> String? {
-        guard case .recording(let recorder, let began) = state else { return nil }
+    /// Releases the microphone and keeps the recording for `stopAndTranscribe`. The coach's
+    /// microphone could not start while this recorder held it, and every reconnect left again
+    /// within seconds, for 37 minutes (COCH-22).
+    func stopRecording() {
+        guard case .recording(let recorder, let began) = state else { return }
         state = .idle
         let url = recorder.url
         let duration = recorder.currentTime
         recorder.stop()
         guard duration >= Self.minDuration else {
             try? FileManager.default.removeItem(at: url)
-            return nil
+            return
         }
-        diag("offline-voice", "stopped after \(Int(duration))s; transcribing on the phone")
+        if let old = pending { diag("offline-voice", "kept an untranscribed recording of \(Int(old.duration))s") }
+        pending = (url, duration, began)
+        diag("offline-voice", "stopped after \(Int(duration))s")
+    }
+
+    /// Stops and transcribes. Returns the text said offline, or nil when there was nothing.
+    func stopAndTranscribe() async -> String? {
+        stopRecording()
+        guard let recording = pending else { return nil }
+        pending = nil
+        let url = recording.url, began = recording.began
+        diag("offline-voice", "transcribing on the phone")
         guard let text = await Self.transcribe(url), !text.isEmpty else {
             diag("offline-voice", "nothing transcribed; audio kept")
             return nil

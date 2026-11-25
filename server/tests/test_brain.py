@@ -269,7 +269,7 @@ def test_companion_chat_waits_its_interval_after_a_conversation():
     s.user_speaking = False
     talked_at = s.clock.now
     s.run.run(400, speed=slow)
-    first = companions(s)[0]
+    first = next(d for d in companions(s) if d.cue.created_at > talked_at)
     assert first.cue.created_at - talked_at >= s.brain.profile.cadence.companion_s
 
 

@@ -11,7 +11,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from coachw.coach.events import Rule
-from coachw.coach.metrics_state import Split
+from coachw.coach.metrics_state import Moving, Split
 
 if TYPE_CHECKING:
     from coachw.coach.brain import CoachBrain
@@ -108,6 +108,9 @@ class ActivityProfile:
     """Speed is read as pace per km (on foot); False reads it as km/h (on wheels)."""
     time_mark_s: float | None = None
     """A milestone every this much running time, for activities without distance splits."""
+    moving: Moving | None = None
+    """Whether a sample's readings look like doing this activity (cadence, speed). Warm-up, the
+    start milestone and "active time" go by it; None trusts the watch's start (COCH-22)."""
     time_mark_facts: Callable[[float, float | None], str] = lambda elapsed_s, _kcal: (
         f"已经运动 {elapsed_s / 60:.0f} 分钟。简短地鼓励用户。"
     )

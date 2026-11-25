@@ -6,6 +6,8 @@ safety. The only alert is the heart-rate safety limit; nothing corrects pace or 
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from coachw.coach.events import Alert, Sustained
 from coachw.coach.format import pace_seconds, say_duration, say_pace
 from coachw.coach.metrics_state import Split
@@ -16,6 +18,20 @@ from coachw.protocol import CuePriority, Haptic
 DEFAULT_MAX_HR_BPM = 190.0
 HR_EMERGENCY_SHARE = 0.97
 HR_EMERGENCY = "hr_emergency_bpm"
+
+
+# Looks like walking: steps, or a speed on foot; faster than a jog is a ride (COCH-22).
+WALK_MIN_CADENCE_SPM = 50.0
+WALK_SPEED_MPS = (0.4, 3.5)
+
+
+def _walking(values: Mapping[str, float]) -> bool:
+    speed, cadence = values.get("speed_mps"), values.get("cadence_spm")
+    if speed is not None and speed > WALK_SPEED_MPS[1]:
+        return False
+    if cadence is not None:
+        return cadence >= WALK_MIN_CADENCE_SPM
+    return speed is not None and speed >= WALK_SPEED_MPS[0]
 
 
 def _defaults(athlete: Athlete) -> dict[str, float]:
@@ -85,6 +101,7 @@ def _on_foot(
         default_targets=_defaults,
         start_hint="轻松地打个招呼，说你会一路陪着聊天，想安静随时说。",
         end_hint="用一句话轻松地总结，提醒喝点水，再问用户这次走下来感觉怎么样。",
+        moving=_walking,
     )
 
 

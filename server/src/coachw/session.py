@@ -37,6 +37,10 @@ PLACES_METHOD = "coach.places"
 START_METHOD = "coach.start"
 STARTABLE_ACTIVITIES = ("running", "walking", "hiking", "cycling", "other")
 
+# RPC the coach calls on the athlete's phone to pause, resume or end the workout (spec 7.6).
+CONTROL_METHOD = "coach.control"
+CONTROL_ACTIONS = ("pause", "resume", "end")
+
 
 def parse_athlete_id(raw: str) -> str:
     """Normalize an athlete id (a UUID generated on the phone). Raises ValueError."""

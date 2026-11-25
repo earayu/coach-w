@@ -32,7 +32,11 @@ SYSTEM = """\
 手表上选的运动可能和用户实际在做的不一样，传感器也会出错。说不通就直说哪里不对、猜一猜可能的原因、问用户，不要夸。
 - 结合最近的对话，不要重复刚说过的话。
 - 只输出要说的话本身，不要引号，不要解释，不要 markdown。
+- 教练提示让你自己判断要不要说时，没什么值得说的就只输出 SKIP。不要为了说而说，\
+也不要重复最近几分钟说过的内容。
 """
+
+SKIP = "SKIP"
 
 SAY = "【教练提示】把下面这句话自然地说给用户听，意思和数字都不要改，也不要补充：\n{text}"
 
@@ -89,19 +93,23 @@ class CueWriter:
         lines.append(f"语气：{PRIORITY_TONE[cue.priority]}")
         return "\n".join(lines)
 
-    async def instructions_for(self, delivery: Delivery) -> str:
-        """What to hand the realtime model: the written line, or the plain cue as a fallback."""
+    async def instructions_for(self, delivery: Delivery) -> str | None:
+        """What to hand the realtime model: the written line, or the plain cue as a fallback.
+
+        None for a wake-up (`delivery.optional`) with nothing worth saying, or whose line could
+        not be used: a wake-up has no plain cue to fall back on (spec 4.2.2)."""
         if delivery.cue.priority is CuePriority.EMERGENCY:
             return delivery.instructions
+        fallback = None if delivery.optional else delivery.instructions
         prompt = self.prompt(delivery)
         text = await self._write(SYSTEM, prompt)
         if not text:
-            return delivery.instructions
+            return fallback
         # AGENTS.md 2: every number must come from the facts the coach system gave
         if invented := numbers_in(text) - numbers_in(prompt):
             logger.info("writer added %d numbers of its own; using the plain cue", len(invented))
-            return delivery.instructions
+            return fallback
         cleaned = text.strip().strip('"“”「」').strip()
-        if not cleaned:
-            return delivery.instructions
+        if not cleaned or cleaned.upper().startswith(SKIP):
+            return fallback
         return SAY.format(text=cleaned)

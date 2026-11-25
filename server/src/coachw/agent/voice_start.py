@@ -31,3 +31,25 @@ class VoiceStart:
         if not START.search(text) or HOLD.search(text):
             return None
         return named or self.mentioned
+
+
+# Pausing and resuming by voice (COCH-22: "pause it for me" got "I can't control the watch").
+# Ending is left to the model's `end_workout` tool, which confirms first: it cannot be undone.
+PAUSE = re.compile(r"暂停")
+RESUME = re.compile(r"取消暂停|恢复|继续(?:跑|骑|走|运动|计时|记录)|接着(?:跑|骑|走)")
+# "don't pause", "is it paused?", "the coach should be able to pause" (product feedback): not a
+# request to pause now. "能不能帮我暂停" is one.
+CONTROL_HOLD = re.compile(
+    r"不要|不想|不用|别|先不|了吗|了么|了没|是不是|有没有|应该|能够|功能|改进|产品|如果|待会|一会"
+)
+
+
+def control_heard(text: str, *, paused: bool) -> str | None:
+    """ "pause" or "resume" when the athlete clearly asked for it, else None."""
+    if CONTROL_HOLD.search(text):
+        return None
+    if paused and RESUME.search(text):
+        return "resume"
+    if not paused and PAUSE.search(text) and "取消暂停" not in text:
+        return "pause"
+    return None

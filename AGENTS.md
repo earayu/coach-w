@@ -33,6 +33,7 @@ coach-w 是一个实时语音运动教练：Apple Watch 采集运动指标，iPh
 - `apple/CoachKit`：`MetricsFrame`、`CoachCue`、`CoachResume`（线协议）、`FrameBuilder`（合并读数、节流、推算步频、GPS）、`FrameStats`（收端统计）、`ServerAddress`（设置里的服务器地址校验）、`WorkoutTracker`（手机端跟踪运动：公里时刻、均值）、`LocalCoach`（断网兜底规则）、`ReconnectPolicy`、`CoachPresence`（教练随运动接通、空闲挂断、时长上限后续上，spec 7.6）、`CoachStatus`（手机告诉手表教练在不在）、`WorkoutRecord`
 - `server/src/coachw/session.py`：token API 与 Agent 的约定（Agent 名 `coach-w`、签进 token 的 `SessionMeta`）
 - `server/src/coachw/agent/transcript.py`：每个会话的对话全文（JSONL，`COACHW_TRANSCRIPT_DIR`，生产在 docker 卷 `transcripts`）；看用户语音里提的反馈先查这里。新教练从这里取运动者最近的对话接着聊（`recent_conversation`）
+- `server/src/coachw/agent/turns.py`：不回答 0 字的转写（杂音）、不把模型的"[ERROR…]""[工具调用]"当成教练的话；`memory.py`：用户交代的事（`coach/requests.py`）和口述的产品意见，存在对话记录目录旁边
 - `server/src/coachw/agent/worker.py`：Agent 入口、`AthleteInbox`（订阅 `coach.metrics` / `coach.resume`，身份确认前暂存）、续接开场白、下发 `coach.cue`、会话时长上限；`coach.py`：系统提示词、工具、档案工具包装、状态摘要；`loop.py`：每秒教练循环（cue → `generate_reply(user_input=...)`、紧急打断、状态摘要）
 - `server/src/coachw/coach/`：通用教练内核，不出现运动类型（spec 4.8）。`metrics_state.py`（窗口、连续时长、分段、基线）、`events.py`（`CoachEvent`、通用规则、`EventEngine`）、`director.py`（阶段、节点、陪伴）、`cue_queue.py`（优先级 / 冷却 / 过期 / 不插话 / 静音 / 密度）、`brain.py`（每会话编排与工具结果）、`format.py`
 - `server/src/coachw/profiles/`：运动档案（spec 5.3、5.4）。`base.py`（`ActivityProfile`）、`registry.py`（`activity` → 档案）、`running.py`（P0 跑步）、`walking.py`（散步、徒步）、`cycling.py`（骑行）、`fallback.py`（通用兜底）
@@ -44,7 +45,7 @@ coach-w 是一个实时语音运动教练：Apple Watch 采集运动指标，iPh
 
 1. **手表是唯一的运动数据源。** workout 由手表的 `HKWorkoutSession` 采集和保存；iPhone 和服务端不另算一套距离、配速。服务端或语音的任何故障都不能丢运动记录。
 2. **模型不猜数据。** 教练说出的每个数字都来自工具调用或注入的状态。系统提示词必须写明禁止估计数字。
-3. **时机由确定性代码决定，表达交给模型。** 主动说话由 Director / EventEngine / CueQueue 决定，不让模型自己决定什么时候开口（spec 4.2）。
+3. **时机由确定性代码决定，表达交给模型。** 主动说话由 Director / EventEngine / CueQueue 决定，不让模型自己决定什么时候开口（spec 4.2）。唯一的例外（维护者 2026-11-25 同意）：开着写稿模型时程序定时唤醒教练，由写稿模型决定这次说不说（spec 4.2.2）；安全提醒仍由程序直接触发。
 4. **通用内核不出现运动类型分支。** 跑步、骑行等差异只写在运动档案里（spec 第 5 节）。
 5. **客户端不持有模型 Key。** iOS / watchOS 只拿服务端签发的短期 LiveKit token。
 6. **健康数据最小化。** 心率、位置只在会话内存中使用；日志不打指标原值和坐标；仓库不提交真实运动记录。例外（维护者 2026-11-22 要求）：对话全文记录在服务端 `COACHW_TRANSCRIPT_DIR` 和手机本地（spec 11），不进日志、不入库。断网时的录音只存在手机本地，转写后删除（spec 7.4）；周边地点在手机上用 Apple 地图查，只把地名、距离、方向给教练（spec 7.5）。
