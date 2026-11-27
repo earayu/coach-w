@@ -103,6 +103,8 @@ final class VoiceSession: NSObject {
     @ObservationIgnored var startProvider: (@MainActor (String) -> String)?
     /// Answers the coach's pause / resume / end tools: action in, JSON out (spec 7.6).
     @ObservationIgnored var controlProvider: (@MainActor (String) -> String)?
+    /// Answers the coach's `get_history` tool: activity filter & limit in, compact JSON out (spec 11).
+    @ObservationIgnored var historyProvider: (@MainActor (_ activity: String, _ limit: Int) -> String)?
     /// Called right before the coach's microphone is switched on, to release it elsewhere.
     @ObservationIgnored var onWillEnableMicrophone: (@MainActor () -> Void)?
 
@@ -112,6 +114,8 @@ final class VoiceSession: NSObject {
     static let startMethod = "coach.start"
     /// RPC the coach calls to pause, resume or end the workout (`server/src/coachw/session.py`).
     static let controlMethod = "coach.control"
+    /// RPC the coach calls to read recent workout summaries (`server/src/coachw/session.py`).
+    static let historyMethod = "coach.history"
     /// A microphone that would not start is tried again this often while the room stays up.
     static let microphoneRetry: Duration = .seconds(5)
     /// Text the agent takes as the user's words (livekit-agents' chat input).
@@ -119,11 +123,11 @@ final class VoiceSession: NSObject {
 
     /// The coach answers this RPC (`server/src/coachw/session.py`). On mobile data the link died
     /// without LiveKit noticing for 30-90 s, and nobody heard the athlete meanwhile (COCH-15):
-    /// unanswered pings end the link after about 10 s and the phone rejoins its room.
+    /// unanswered pings end the link after ~15-20 s and the phone rejoins its room.
     static let heartbeatMethod = "coach.ping"
     static let heartbeatInterval: Duration = .seconds(5)
-    static let heartbeatTimeout: TimeInterval = 4
-    static let heartbeatMisses = 2
+    static let heartbeatTimeout: TimeInterval = 5
+    static let heartbeatMisses = 3
 
     @ObservationIgnored private var room: Room?
     @ObservationIgnored private var roomGeneration: Int?
@@ -132,10 +136,12 @@ final class VoiceSession: NSObject {
     /// Frames are published one after another, in the order they arrived (M3 trend windows).
     @ObservationIgnored private var sendTail: Task<Void, Never>?
     @ObservationIgnored private var connectTask: Task<Void, Never>?
+    @ObservationIgnored private var disconnectTask: Task<Void, Never>?
     @ObservationIgnored private var retryTask: Task<Void, Never>?
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
     @ObservationIgnored private var heartbeat: Task<Void, Never>?
     @ObservationIgnored private let micMeter = MicMeter()
+    @ObservationIgnored private var offlineAudioTap: OfflineAudioTap?
 
     func start(settings: AppSettings) async {
         guard !isActive else {
@@ -144,6 +150,7 @@ final class VoiceSession: NSObject {
         }
         AudioManager.shared.remove(localAudioRenderer: micMeter)
         AudioManager.shared.add(localAudioRenderer: micMeter)
+        await enableAudioPreparation()
         MicMeter.logAudioState("before connect")
         self.settings = settings
         framesSent = 0
@@ -153,9 +160,63 @@ final class VoiceSession: NSObject {
 
     func stop() async {
         diag("voice", "stop requested")
+        stopOfflineAudioCapture(releaseEngine: false)
         let roomToClose = self.room
         dispatch(.stop)
+        await disconnectTask?.value
         await roomToClose?.disconnect()
+        await releaseAudioPreparation()
+    }
+
+    /// Keeps LiveKit's audio engine initialized in muted `.playAndRecord` mode across room swaps
+    /// so iOS does not tear down background audio and reject microphone restart in a pocket (COCH-22).
+    func enableAudioPreparation() async {
+        guard !AudioManager.shared.isRecordingAlwaysPreparedMode else { return }
+        guard AVAudioApplication.shared.recordPermission == .granted else { return }
+        do {
+            try await AudioManager.shared.setRecordingAlwaysPreparedMode(true)
+            diag("voice", "audio always-prepared mode enabled")
+        } catch {
+            diag("voice", "audio always-prepared mode failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Releases background audio preparation once the voice session is truly done (not rejoining).
+    func releaseAudioPreparation() async {
+        guard AudioManager.shared.isRecordingAlwaysPreparedMode else { return }
+        do {
+            try await AudioManager.shared.setRecordingAlwaysPreparedMode(false)
+            diag("voice", "audio always-prepared mode disabled")
+        } catch {
+            log.error("disabling always-prepared mode failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Taps local microphone PCM buffers through LiveKit's shared audio engine while offline.
+    func startOfflineAudioCapture(_ sink: @escaping @Sendable (AVAudioPCMBuffer) -> Void) async -> Bool {
+        await disconnectTask?.value
+        guard status == .offline || status == .reconnecting else { return false }
+        stopOfflineAudioCapture(releaseEngine: false)
+        let tap = OfflineAudioTap(sink: sink)
+        AudioManager.shared.add(localAudioRenderer: tap)
+        do {
+            try AudioManager.shared.startLocalRecording()
+            offlineAudioTap = tap
+            return true
+        } catch {
+            AudioManager.shared.remove(localAudioRenderer: tap)
+            diag("offline-voice", "LiveKit local recording failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    func stopOfflineAudioCapture(releaseEngine: Bool) {
+        guard let tap = offlineAudioTap else { return }
+        offlineAudioTap = nil
+        AudioManager.shared.remove(localAudioRenderer: tap)
+        if releaseEngine {
+            try? AudioManager.shared.stopLocalRecording()
+        }
     }
 
     func toggleMute() async {
@@ -246,6 +307,9 @@ final class VoiceSession: NSObject {
         case .notifyLinkLost:
             onLinkLost?()
         case .notifyStopped:
+            if case .failed(.error) = machine.phase {
+                Task { await self.releaseAudioPreparation() }
+            }
             onStopped?()
         }
     }
@@ -289,8 +353,10 @@ final class VoiceSession: NSObject {
         connectTask?.cancel()
         connectTask = Task { [weak self] in
             do {
+                await self?.disconnectTask?.value
+                guard let self, self.machine.generation == gen else { return }
                 try await room.connect(url: grant.serverUrl, token: grant.token)
-                guard let self, self.machine.generation == gen else {
+                guard self.machine.generation == gen else {
                     await room.disconnect()
                     return
                 }
@@ -298,9 +364,11 @@ final class VoiceSession: NSObject {
                 await self.answerPlaces(in: room)
                 await self.answerStart(in: room)
                 await self.answerControl(in: room)
+                await self.answerHistory(in: room)
                 if micEnabled { self.onWillEnableMicrophone?() }
                 do {
                     try await room.localParticipant.setMicrophone(enabled: micEnabled)
+                    if micEnabled { await self.enableAudioPreparation() }
                 } catch {
                     // Leaving here dropped every reconnect within seconds, for 37 minutes, while
                     // the phone was in a pocket (COCH-22). Stay: the coach still talks, cues
@@ -350,7 +418,11 @@ final class VoiceSession: NSObject {
         self.room = nil
         self.roomGeneration = nil
         if let old {
-            Task { await old.disconnect() }
+            let previous = disconnectTask
+            disconnectTask = Task {
+                await previous?.value
+                await old.disconnect()
+            }
         }
     }
 
@@ -374,14 +446,26 @@ final class VoiceSession: NSObject {
                         responseTimeout: Self.heartbeatTimeout, maxRoundTripLatency: Self.heartbeatTimeout
                     )
                     misses = 0
-                } catch let error as RpcError where error.code == RpcError.BuiltInError.unsupportedMethod.code {
-                    diag("voice", "coach does not answer heartbeats; heartbeat off")
-                    return
+                } catch let error as RpcError {
+                    switch HeartbeatErrorAction.forRpcCode(error.code) {
+                    case .disable:
+                        diag("voice", "coach does not answer heartbeats (rpc \(error.code)); heartbeat off")
+                        return
+                    case .ignore:
+                        diag("voice", "heartbeat rpc \(error.code) (\(error.message)); link alive, ignoring")
+                    case .countMiss:
+                        misses += 1
+                        diag("voice", "heartbeat missed (\(misses)/\(Self.heartbeatMisses)): rpc \(error.code) \(error.message)")
+                        guard misses >= Self.heartbeatMisses, self.isCurrent(id) else { continue }
+                        diag("voice", "coach unreachable for \(misses) heartbeats; rejoining")
+                        self.dispatch(.heartbeatFailed(generation: gen))
+                        return
+                    }
                 } catch is CancellationError {
                     return
                 } catch {
                     misses += 1
-                    diag("voice", "heartbeat missed (\(misses)): \(error.localizedDescription)")
+                    diag("voice", "heartbeat missed (\(misses)/\(Self.heartbeatMisses)): \(String(describing: error))")
                     guard misses >= Self.heartbeatMisses, self.isCurrent(id) else { continue }
                     diag("voice", "coach unreachable for \(misses) heartbeats; rejoining")
                     self.dispatch(.heartbeatFailed(generation: gen))
@@ -483,6 +567,24 @@ final class VoiceSession: NSObject {
         }
     }
 
+    private func answerHistory(in room: Room) async {
+        do {
+            try await room.registerRpcMethod(Self.historyMethod) { [weak self] data in
+                let obj = (try? JSONSerialization.jsonObject(with: Data(data.payload.utf8)) as? [String: Any]) ?? [:]
+                let activity = obj["activity"] as? String ?? ""
+                let limit = obj["limit"] as? Int ?? 5
+                return await MainActor.run {
+                    guard let history = self?.historyProvider else {
+                        return #"{"available":false,"reason":"not supported"}"#
+                    }
+                    return history(activity, limit)
+                }
+            }
+        } catch {
+            log.error("history RPC unavailable: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     private func retryMicrophone(in room: Room, generation gen: Int) {
         let id = ObjectIdentifier(room)
         Task { [weak self] in
@@ -493,6 +595,7 @@ final class VoiceSession: NSObject {
                 do {
                     self.onWillEnableMicrophone?()
                     try await room.localParticipant.setMicrophone(enabled: true)
+                    await self.enableAudioPreparation()
                     diag("voice", "microphone started on retry \(attempt)")
                     return
                 } catch {
@@ -544,6 +647,19 @@ final class VoiceSession: NSObject {
     private nonisolated static func isFatalDisconnect(_ error: LiveKitError?) -> Bool {
         guard let type = error?.type else { return false }
         return [.roomDeleted, .participantRemoved, .duplicateIdentity].contains(type)
+    }
+}
+
+/// Forwards local mic PCM buffers from LiveKit's audio engine into `OfflineVoiceRecorder`.
+private final class OfflineAudioTap: NSObject, AudioRenderer, @unchecked Sendable {
+    private let sink: @Sendable (AVAudioPCMBuffer) -> Void
+
+    init(sink: @escaping @Sendable (AVAudioPCMBuffer) -> Void) {
+        self.sink = sink
+    }
+
+    func render(pcmBuffer: AVAudioPCMBuffer) {
+        sink(pcmBuffer)
     }
 }
 

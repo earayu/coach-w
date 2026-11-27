@@ -191,6 +191,8 @@ class SplitTrend:
         splits = ctx.state.splits[-(self.steps + 1) :]
         if len(splits) < self.steps + 1:
             return None
+        if splits[-1].index <= ctx.state.resumed_splits:
+            return None
         values = [self.metric(s) for s in splits]
         if any(v is None for v in values):
             return None
@@ -198,12 +200,25 @@ class SplitTrend:
         if not all((b - a) * self.direction >= self.min_step for a, b in itertools.pairwise(vals)):
             return None
         key = f"{self.kind}:{splits[-1].index}"
-        return self.alert.event(self.kind, self.facts(vals, splits), key=key)
+        event = self.alert.event(self.kind, self.facts(vals, splits), key=key)
+        # Never fire twice for the same last split index within one session.
+        return CoachEvent(
+            kind=event.kind,
+            priority=event.priority,
+            facts=event.facts,
+            cooldown_key=event.cooldown_key,
+            cooldown_s=float("inf"),
+            ttl_s=event.ttl_s,
+            haptic=event.haptic,
+            watch_text=event.watch_text,
+            optional=event.optional,
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class Grade:
-    """Climbing (or descending) at least `grade` (e.g. 0.03 = 3 %) over the last `window_s`.
+    """Climbing (or descending) at least `grade` (e.g. 0.03 = 3 %) over the last `window_s`,
+    with at least `min_alt_m` metres of altitude change.
 
     `facts(grade, altitude_change_m)` words the event. Its sign follows `grade`: a negative
     threshold watches descents.
@@ -214,10 +229,11 @@ class Grade:
     window_s: float
     alert: Alert
     facts: Callable[[float, float], str]
+    min_alt_m: float = 0.0
 
     def evaluate(self, ctx: RuleContext) -> CoachEvent | None:
         climb = ctx.state.climb(self.window_s)
-        if climb is None:
+        if climb is None or abs(climb.alt_change_m) < self.min_alt_m:
             return None
         hit = climb.grade >= self.grade if self.grade > 0 else climb.grade <= self.grade
         return (

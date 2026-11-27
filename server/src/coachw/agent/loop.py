@@ -144,6 +144,8 @@ class CoachLoop:
         )
         if text is None or (delivery.optional and self.writer is None):
             # a wake-up with nothing worth saying (spec 4.2.2)
+            if delivery.optional:
+                self.brain.note_check_in_skipped()
             logger.info("cue %s kind=%s: nothing to say", cue.id, cue.event.kind)
             return
         # As a user-role text turn, not `instructions=`: Qwen ignores mid-conversation system

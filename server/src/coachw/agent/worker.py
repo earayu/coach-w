@@ -28,10 +28,11 @@ from coachw.agent.coach import (
     cap_farewell,
 )
 from coachw.agent.cue_writer import CueWriter, conversation_of
+from coachw.agent.feedback import FeedbackCatcher
 from coachw.agent.loop import CoachLoop
 from coachw.agent.memory import AthleteMemory
 from coachw.agent.transcript import Transcript, recent_conversation, transcript_dir
-from coachw.agent.turns import TurnGuard
+from coachw.agent.turns import TurnGuard, is_empty_turn
 from coachw.agent.voice_start import VoiceStart, control_heard
 from coachw.coach.brain import DEFAULT_TZ, CoachBrain
 from coachw.profiles.base import Athlete
@@ -51,6 +52,7 @@ from coachw.session import (
     AGENT_NAME,
     CONTROL_METHOD,
     HEARTBEAT_METHOD,
+    HISTORY_METHOD,
     PLACES_METHOD,
     START_METHOD,
     SessionMeta,
@@ -290,6 +292,23 @@ async def ask_phone_to_control(room: rtc.Room, identity: str, action: str) -> di
     return result or {"ok": False, "reason": "phone did not answer (an app without this feature?)"}
 
 
+async def ask_phone_for_history(
+    room: rtc.Room, identity: str, activity: str = "", limit: int = 5
+) -> dict[str, Any]:
+    """Reads compact local workout history summaries from the athlete's phone (spec 11)."""
+    result = await ask_phone(
+        room,
+        identity,
+        HISTORY_METHOD,
+        {"activity": activity, "limit": limit},
+        START_TIMEOUT_S,
+    )
+    return result or {
+        "available": False,
+        "reason": "phone did not answer (an app without this feature?)",
+    }
+
+
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
@@ -330,12 +349,16 @@ async def entrypoint(ctx: JobContext) -> None:
         places=lambda query: ask_phone_for_places(ctx.room, participant.identity, query),
         start=lambda activity: ask_phone_to_start(ctx.room, participant.identity, activity),
         control=lambda action: ask_phone_to_control(ctx.room, participant.identity, action),
+        workout_history=lambda activity, limit: ask_phone_for_history(
+            ctx.room, participant.identity, activity, limit
+        ),
         memory=memory,
     )
     turns = TurnLog()
     turns.attach(session)
     TurnGuard(session).attach()
     voice_start = VoiceStart()
+    feedback = FeedbackCatcher()
     pending: set[asyncio.Task] = set()
 
     def run(coro: Any) -> None:
@@ -344,9 +367,17 @@ async def entrypoint(ctx: JobContext) -> None:
         task.add_done_callback(pending.discard)
 
     def on_athlete_words(ev: Any) -> None:
-        # a clear "let's start" / "pause" works even when the model only agrees (spec 7.6)
+        # a clear "let's start" / "pause" / product feedback works even when the model only agrees
         if not ev.is_final:
             return
+        if not is_empty_turn(ev.transcript):
+            brain.note_athlete_spoke()
+        if (
+            memory is not None
+            and (note := feedback.heard(ev.transcript, time.monotonic()))
+            and memory.note_feedback(note)
+        ):
+            logger.info("captured product feedback from athlete speech")
         if brain.workout_in_progress():
             latest = brain.state.latest
             paused = latest is not None and latest.state is WorkoutState.PAUSED

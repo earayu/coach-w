@@ -81,6 +81,7 @@ class Director:
         *,
         since_spoken_s: float,
         since_alert_s: float,
+        quiet_backoff: float = 1.0,
     ) -> list[CoachEvent]:
         frame = state.latest
         if frame is None:
@@ -113,7 +114,7 @@ class Director:
         events += self._time_mark_events(state)
         events += self._goal_events(state, targets)
         if not events:
-            events += self._companion(state, since_spoken_s, since_alert_s)
+            events += self._companion(state, since_spoken_s, since_alert_s, quiet_backoff)
         return events
 
     # -- milestones ----------------------------------------------------------------------------
@@ -258,10 +259,14 @@ class Director:
         return c.companion_s * (c.stable_multiplier if stable else 1.0)
 
     def _companion(
-        self, state: MetricsState, since_spoken_s: float, since_alert_s: float
+        self,
+        state: MetricsState,
+        since_spoken_s: float,
+        since_alert_s: float,
+        quiet_backoff: float = 1.0,
     ) -> list[CoachEvent]:
         topics = self.profile.companion_topics
-        if not topics or since_spoken_s < self.companion_interval_s(since_alert_s):
+        if not topics or since_spoken_s < self.companion_interval_s(since_alert_s) * quiet_backoff:
             return []
         topic = topics[self._topic % len(topics)]
         return [

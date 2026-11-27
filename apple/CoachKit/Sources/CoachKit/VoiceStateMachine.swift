@@ -286,3 +286,26 @@ public struct VoiceStateMachine: Sendable, Equatable {
         return effects
     }
 }
+
+/// Classifies a LiveKit RPC error code from the `coach.ping` heartbeat (COCH-22).
+public enum HeartbeatErrorAction: Equatable, Sendable {
+    /// The server does not implement `coach.ping`: turn off heartbeats for this room.
+    case disable
+    /// The server answered or rejected the request, so the link is alive: do not count a miss.
+    case ignore
+    /// The ping could not reach or hear back from the agent: count toward the drop threshold.
+    case countMiss
+
+    /// Codes come from LiveKit's `RpcError.BuiltInError`.
+    public static func forRpcCode(_ code: Int) -> HeartbeatErrorAction {
+        switch code {
+        case 1400: .disable // unsupportedMethod
+        case 1501, 1502, 1503, 1505, 1401:
+            // connectionTimeout, responseTimeout, recipientDisconnected, sendFailed, recipientNotFound
+            .countMiss
+        default:
+            // e.g. 1500 applicationError: the server answered, so the link is still up
+            .ignore
+        }
+    }
+}

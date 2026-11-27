@@ -168,3 +168,54 @@ import Testing
     }
     #expect(sm.phase == .idle)
 }
+
+@Test func heartbeatErrorActionDistinguishesLinkLossFromAppErrors() {
+    #expect(HeartbeatErrorAction.forRpcCode(1400) == .disable)
+    #expect(HeartbeatErrorAction.forRpcCode(1500) == .ignore)
+    #expect(HeartbeatErrorAction.forRpcCode(1504) == .ignore)
+    for code in [1501, 1502, 1503, 1505, 1401] {
+        #expect(HeartbeatErrorAction.forRpcCode(code) == .countMiss)
+    }
+}
+
+@Test func workoutHistorySummaryFiltersLimitsAndExcludesPrivateData() throws {
+    let tz = try #require(TimeZone(identifier: "Asia/Shanghai"))
+    let t1 = Date(timeIntervalSince1970: 1_795_590_000)
+    let t2 = t1.addingTimeInterval(86_400)
+    let run = WorkoutRecord(
+        activity: "running",
+        startedAt: t2,
+        endedAt: t2.addingTimeInterval(1800),
+        durationS: 1800,
+        distanceM: 5000,
+        avgHrBpm: 150.4,
+        maxHrBpm: 168.0,
+        avgSpeedMps: 5000.0 / 1800.0,
+        avgCadenceSpm: 172.0,
+        kmSplitsS: [355, 360, 365, 360, 360],
+        lines: [CoachLine(at: t2, text: "private chat", source: .athlete)]
+    )
+    let ride = WorkoutRecord(
+        activity: "cycling",
+        startedAt: t1,
+        endedAt: t1.addingTimeInterval(3600),
+        durationS: 3600,
+        distanceM: 20_000,
+        avgSpeedMps: 20_000.0 / 3600.0
+    )
+
+    let allJSON = WorkoutHistory.summaryJSON(from: [ride, run], limit: 5, timeZone: tz)
+    #expect(!allJSON.contains("private chat"))
+    let obj = try #require(JSONSerialization.jsonObject(with: Data(allJSON.utf8)) as? [String: Any])
+    #expect(obj["available"] as? Bool == true)
+    #expect(obj["count"] as? Int == 2)
+    let rows = try #require(obj["records"] as? [[String: Any]])
+    #expect(rows[0]["activity"] as? String == "running")
+    #expect(rows[0]["avg_pace_s_per_km"] as? Int == 360)
+    #expect(rows[1]["activity"] as? String == "cycling")
+    #expect(rows[1]["avg_pace_s_per_km"] == nil)
+
+    let runsOnly = WorkoutHistory.summaryJSON(from: [ride, run], activity: "running", limit: 1, timeZone: tz)
+    let filtered = try #require(JSONSerialization.jsonObject(with: Data(runsOnly.utf8)) as? [String: Any])
+    #expect(filtered["count"] as? Int == 1)
+}

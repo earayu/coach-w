@@ -117,3 +117,21 @@ def test_session_meta_carries_the_cue_writer():
     assert SessionMeta.from_json(meta.to_json()) == meta
     old = json.dumps({"athlete_id": str(uuid.uuid4()), "max_session_s": 60})
     assert SessionMeta.from_json(old).cue_writer == ""
+
+
+def test_writer_drops_verbatim_duplicate_of_last_coach_line():
+    w, _ = writer("抱歉，我记错了。", history=[("coach", "抱歉我记错了")])
+    opt = Delivery(
+        Cue(
+            "c2",
+            CoachEvent(
+                "check_in", CuePriority.COMPANION, "检查", "check_in", 60, 15, optional=True
+            ),
+            0,
+            15,
+        ),
+        "【教练提示】检查",
+        interrupt=False,
+        watch=None,
+    )
+    assert asyncio.run(w.instructions_for(opt)) is None

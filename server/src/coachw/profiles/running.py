@@ -53,6 +53,10 @@ PACE_MIN_S = 150  # 2'30" per km
 RUN_MIN_CADENCE_SPM = 120.0
 RUN_SPEED_MPS = (1.5, 7.5)
 CLIMB_GRADE = 0.03
+CLIMB_MIN_ALT_M = 4.0
+LONG_CLIMB_GRADE = 0.02
+LONG_CLIMB_WINDOW_S = 180.0
+LONG_CLIMB_MIN_ALT_M = 6.0
 PACE_MAX_S = 900  # 15'00" per km
 GOAL_MAX_KM = 100
 
@@ -293,6 +297,7 @@ RUNNING = ActivityProfile(
             kind="uphill",
             grade=CLIMB_GRADE,
             window_s=60,
+            min_alt_m=CLIMB_MIN_ALT_M,
             alert=Alert(CuePriority.CORRECTION, 300, 20, None, "上坡", key="terrain"),
             facts=lambda g, rise: (
                 f"最近一分钟在上坡，海拔升了 {rise:.0f} 米，坡度约 {g * 100:.0f}%。"
@@ -304,10 +309,33 @@ RUNNING = ActivityProfile(
             kind="downhill",
             grade=-CLIMB_GRADE,
             window_s=60,
+            min_alt_m=CLIMB_MIN_ALT_M,
             alert=Alert(CuePriority.CORRECTION, 300, 20, None, "下坡", key="terrain"),
             facts=lambda g, rise: (
                 f"最近一分钟在下坡，海拔降了 {-rise:.0f} 米，坡度约 {-g * 100:.0f}%。"
                 "提醒用户身体别后仰、步子别迈太大，用小步快频控制速度，保护膝盖。"
+            ),
+        ),
+        Grade(
+            kind="uphill",
+            grade=LONG_CLIMB_GRADE,
+            window_s=LONG_CLIMB_WINDOW_S,
+            min_alt_m=LONG_CLIMB_MIN_ALT_M,
+            alert=Alert(CuePriority.CORRECTION, 300, 20, None, "缓上坡", key="terrain"),
+            facts=lambda g, rise: (
+                f"最近三分钟一直在缓上坡，海拔累计升了 {rise:.0f} 米，平均坡度约 {g * 100:.0f}%。"
+                "长缓坡会让心率慢慢升高、配速变慢，这很正常。提醒用户稳住呼吸和步频，按用力感跑。"
+            ),
+        ),
+        Grade(
+            kind="downhill",
+            grade=-LONG_CLIMB_GRADE,
+            window_s=LONG_CLIMB_WINDOW_S,
+            min_alt_m=LONG_CLIMB_MIN_ALT_M,
+            alert=Alert(CuePriority.CORRECTION, 300, 20, None, "缓下坡", key="terrain"),
+            facts=lambda g, rise: (
+                f"最近三分钟一直在缓下坡，海拔累计降了 {-rise:.0f} 米，平均坡度约 {-g * 100:.0f}%。"
+                "提醒用户放松顺着跑、小步快频控速，别刹车伤膝盖。"
             ),
         ),
     ),

@@ -7,8 +7,10 @@ private let log = Logger(subsystem: "com.earayu.coachw", category: "offline-voic
 
 /// Keeps what the athlete says while the coach is unreachable (spec 7.4, COCH-15).
 ///
-/// Records the microphone to a local file while the voice link is down; once it is back, the
-/// file is transcribed on the phone and the text goes to the conversation log and to the coach.
+/// Captures PCM buffers from LiveKit's already-running audio engine (which stays alive in the
+/// background via always-prepared recording mode) instead of starting a competing `AVAudioRecorder`
+/// that iOS rejects while the phone is in a pocket (COCH-22). Once the link is back, the file is
+/// transcribed on the phone and the text goes to the conversation log and to the coach.
 /// The audio stays in Application Support/offline-voice and is deleted once transcribed; a file
 /// that could not be transcribed is kept. Nothing is logged but sizes and outcomes.
 @MainActor
@@ -17,8 +19,13 @@ final class OfflineVoiceRecorder: NSObject {
 
     private enum State {
         case idle
-        case recording(recorder: AVAudioRecorder, startedAt: Date)
+        case starting(writer: PCMWriter, startedAt: Date)
+        case recording(writer: PCMWriter, startedAt: Date)
     }
+
+    /// Hooks into `VoiceSession`'s LiveKit `AudioManager` so only `VoiceSession` imports LiveKit.
+    var startCapture: (@MainActor (@escaping @Sendable (AVAudioPCMBuffer) -> Void) async -> Bool)?
+    var stopCapture: (@MainActor (_ releaseEngine: Bool) -> Void)?
 
     private var state: State = .idle
     /// A recording stopped (to hand the microphone to the coach) but not transcribed yet.
@@ -29,11 +36,13 @@ final class OfflineVoiceRecorder: NSObject {
     static let minDuration: TimeInterval = 1.5
 
     var isRecording: Bool {
-        if case .recording(let recorder, _) = state { return recorder.isRecording }
-        return false
+        switch state {
+        case .starting, .recording: true
+        case .idle: false
+        }
     }
 
-    /// Starts keeping the microphone; the audio session is the one LiveKit set up (play and record).
+    /// Starts keeping the microphone through LiveKit's shared audio engine.
     func start() {
         guard case .idle = state else { return }
         do {
@@ -41,50 +50,63 @@ final class OfflineVoiceRecorder: NSObject {
             let stamp = Self.fileStamp.string(from: .now)
             let suffix = String(UUID().uuidString.prefix(8))
             let url = directory.appending(path: "\(stamp)-\(suffix).m4a")
-            let settings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 16_000,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
-            ]
-            let session = AVAudioSession.sharedInstance()
-            if session.category != .playAndRecord {
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .mixWithOthers])
+            let writer = try PCMWriter(url: url)
+            let began = Date.now
+            state = .starting(writer: writer, startedAt: began)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let started = await self.startCapture?({ buffer in writer.append(buffer) }) ?? false
+                guard case .starting(let active, _) = self.state, active === writer else {
+                    // Stopped while waiting for the old room to finish disconnecting.
+                    if started { self.stopCapture?(false) }
+                    _ = writer.finish()
+                    try? FileManager.default.removeItem(at: url)
+                    return
+                }
+                guard started else {
+                    self.state = .idle
+                    _ = writer.finish()
+                    try? FileManager.default.removeItem(at: url)
+                    diag("offline-voice", "recorder did not start: audio engine unavailable")
+                    return
+                }
+                self.state = .recording(writer: writer, startedAt: began)
+                diag("offline-voice", "recording while the coach is unreachable")
             }
-            try session.setActive(true)
-            let recorder = try AVAudioRecorder(url: url, settings: settings)
-            guard recorder.record() else {
-                diag("offline-voice", "recorder did not start")
-                return
-            }
-            state = .recording(recorder: recorder, startedAt: .now)
-            diag("offline-voice", "recording while the coach is unreachable")
         } catch {
             diag("offline-voice", "could not start recording: \(error.localizedDescription)")
         }
     }
 
-    /// Releases the microphone and keeps the recording for `stopAndTranscribe`. The coach's
-    /// microphone could not start while this recorder held it, and every reconnect left again
-    /// within seconds, for 37 minutes (COCH-22).
-    func stopRecording() {
-        guard case .recording(let recorder, let began) = state else { return }
-        state = .idle
-        let url = recorder.url
-        let duration = recorder.currentTime
-        recorder.stop()
-        guard duration >= Self.minDuration else {
-            try? FileManager.default.removeItem(at: url)
+    /// Stops tapping the microphone and keeps the recording for `stopAndTranscribe`.
+    /// Pass `releaseEngine: false` when handing straight back to LiveKit's microphone publish so
+    /// the audio engine never stops and restarts in the background.
+    func stopRecording(releaseEngine: Bool = false) {
+        switch state {
+        case .idle:
             return
+        case .starting(let writer, _):
+            state = .idle
+            stopCapture?(releaseEngine)
+            _ = writer.finish()
+            try? FileManager.default.removeItem(at: writer.url)
+        case .recording(let writer, let began):
+            state = .idle
+            stopCapture?(releaseEngine)
+            let duration = writer.finish()
+            guard duration >= Self.minDuration else {
+                try? FileManager.default.removeItem(at: writer.url)
+                return
+            }
+            if let old = pending { diag("offline-voice", "kept an untranscribed recording of \(Int(old.duration))s") }
+            pending = (writer.url, duration, began)
+            diag("offline-voice", "stopped after \(Int(duration))s")
         }
-        if let old = pending { diag("offline-voice", "kept an untranscribed recording of \(Int(old.duration))s") }
-        pending = (url, duration, began)
-        diag("offline-voice", "stopped after \(Int(duration))s")
     }
 
     /// Stops and transcribes. Returns the text said offline, or nil when there was nothing.
-    func stopAndTranscribe() async -> String? {
-        stopRecording()
+    func stopAndTranscribe(releaseEngine: Bool = false) async -> String? {
+        stopRecording(releaseEngine: releaseEngine)
         guard let recording = pending else { return nil }
         pending = nil
         let url = recording.url, began = recording.began
@@ -142,6 +164,115 @@ final class OfflineVoiceRecorder: NSObject {
         f.dateFormat = "HH:mm:ss"
         return f
     }()
+}
+
+/// Uniquely owned PCM buffer handed off from WebRTC's callback thread to the writer's serial queue.
+private struct OwnedPCMBuffer: @unchecked Sendable {
+    let buffer: AVAudioPCMBuffer
+}
+
+/// Writes PCM buffers from WebRTC's audio callback thread to a 16 kHz mono AAC file on a serial
+/// queue, converting on the fly whenever the hardware sample rate or route changes.
+private final class PCMWriter: @unchecked Sendable {
+    static let targetRate: Double = 16_000
+    let url: URL
+
+    private let queue = DispatchQueue(label: "com.earayu.coachw.offline-voice")
+    private let targetFormat: AVAudioFormat
+    private var file: AVAudioFile?
+    private var converter: AVAudioConverter?
+    private var writtenFrames: Int64 = 0
+    private var closed = false
+
+    init(url: URL) throws {
+        self.url = url
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: Self.targetRate, channels: 1, interleaved: false
+        ) else {
+            throw NSError(domain: "OfflineVoiceRecorder", code: 1, userInfo: [NSLocalizedDescriptionKey: "invalid audio format"])
+        }
+        self.targetFormat = format
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: Self.targetRate,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
+        ]
+        self.file = try AVAudioFile(
+            forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false
+        )
+    }
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        guard let copy = Self.clone(buffer) else { return }
+        let owned = OwnedPCMBuffer(buffer: copy)
+        queue.async { [self] in
+            self.writeOnQueue(owned.buffer)
+        }
+    }
+
+    private func writeOnQueue(_ copy: AVAudioPCMBuffer) {
+        guard !closed, let file else { return }
+        do {
+            if copy.format == targetFormat {
+                try file.write(from: copy)
+                writtenFrames += Int64(copy.frameLength)
+                return
+            }
+            if converter?.inputFormat != copy.format {
+                converter = AVAudioConverter(from: copy.format, to: targetFormat)
+            }
+            guard let converter else { return }
+            let ratio = targetFormat.sampleRate / copy.format.sampleRate
+            let capacity = AVAudioFrameCount((Double(copy.frameLength) * ratio).rounded(.up)) + 32
+            guard let out = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
+            var consumed = false
+            var convertError: NSError?
+            let status = converter.convert(to: out, error: &convertError) { _, outStatus in
+                if consumed {
+                    outStatus.pointee = .noDataNow
+                    return nil
+                }
+                consumed = true
+                outStatus.pointee = .haveData
+                return copy
+            }
+            if (status == .haveData || status == .inputRanDry), out.frameLength > 0 {
+                try file.write(from: out)
+                writtenFrames += Int64(out.frameLength)
+            }
+        } catch {
+            log.error("writing offline audio failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func finish() -> TimeInterval {
+        queue.sync {
+            closed = true
+            file = nil
+            converter = nil
+            return Double(writtenFrames) / Self.targetRate
+        }
+    }
+
+    private static func clone(_ src: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        let frames = src.frameLength
+        guard frames > 0, let dst = AVAudioPCMBuffer(pcmFormat: src.format, frameCapacity: frames) else {
+            return nil
+        }
+        dst.frameLength = frames
+        let srcList = UnsafeMutableAudioBufferListPointer(src.mutableAudioBufferList)
+        let dstList = UnsafeMutableAudioBufferListPointer(dst.mutableAudioBufferList)
+        guard srcList.count == dstList.count else { return nil }
+        for i in 0..<srcList.count {
+            let bytes = Int(srcList[i].mDataByteSize)
+            if let s = srcList[i].mData, let d = dstList[i].mData, bytes > 0 {
+                memcpy(d, s, min(bytes, Int(dstList[i].mDataByteSize)))
+                dstList[i].mDataByteSize = UInt32(bytes)
+            }
+        }
+        return dst
+    }
 }
 
 /// Resumes a continuation once: the recognizer may call back after its final result.

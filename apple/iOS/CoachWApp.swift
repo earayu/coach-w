@@ -88,13 +88,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let places = PlaceFinder.shared
         places.watchFix = { mirror.latest?.location }
         voice.placesProvider = { await places.lookAround(query: $0) }
+        let store = WorkoutStore.shared
+        voice.historyProvider = { activity, limit in
+            WorkoutHistory.summaryJSON(from: store.records, activity: activity, limit: limit)
+        }
         // What the athlete says while the coach cannot hear it is kept and passed on (spec 7.4).
         let offline = OfflineVoiceRecorder.shared
-        // the coach's microphone could not start while the offline recorder held it (COCH-22)
-        voice.onWillEnableMicrophone = { offline.stopRecording() }
-        let keepOfflineSpeech: @MainActor (Bool) -> Void = { tellCoach in
+        offline.startCapture = { sink in await voice.startOfflineAudioCapture(sink) }
+        offline.stopCapture = { release in voice.stopOfflineAudioCapture(releaseEngine: release) }
+        // Keep LiveKit's audio engine running when handing back from offline capture to the room.
+        voice.onWillEnableMicrophone = { offline.stopRecording(releaseEngine: false) }
+        let keepOfflineSpeech: @MainActor (_ tellCoach: Bool, _ releaseEngine: Bool) -> Void = { tellCoach, releaseEngine in
             Task {
-                guard let text = await offline.stopAndTranscribe() else { return }
+                guard let text = await offline.stopAndTranscribe(releaseEngine: releaseEngine) else { return }
                 conversation.append(text, source: .athlete)
                 recorder.addLine(text, source: .athlete)
                 if tellCoach { await voice.sendOfflineSpeech(text) }
@@ -107,17 +113,23 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
         voice.onConnected = { [weak self] in
             LocalSpeaker.shared.yieldToVoiceCoach()
-            keepOfflineSpeech(true)
+            keepOfflineSpeech(true, false)
             self?.presence.coachConnected(at: .now)
         }
         voice.onStopped = { [weak self] in
-            keepOfflineSpeech(false)
-            guard let self else { return }
+            guard let self else {
+                keepOfflineSpeech(false, true)
+                return
+            }
             // the session length cap ends a long run's coach: bring a new one, which carries on
             // from `coach.resume` and the conversation so far (spec 7.4)
             let rejoin = voice.endedByServer && presence.shouldRejoin(at: .now)
+            keepOfflineSpeech(false, !rejoin)
             presence.coachStopped()
-            guard rejoin else { return }
+            guard rejoin else {
+                Task { await voice.releaseAudioPreparation() }
+                return
+            }
             diag("voice", "server ended the session mid-workout: rejoining")
             Task {
                 try? await Task.sleep(for: Self.rejoinDelay)

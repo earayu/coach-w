@@ -159,3 +159,18 @@ def test_starting_a_new_workout_clears_previous_resume_state():
     s.run.run(3)
     assert s.brain.resumed is None
     assert s.brain.resume_greeting() is None
+
+
+def test_pace_drift_does_not_refire_on_resume_or_repeat_for_same_split():
+    # Resumed session with 3 slower splits (300s, 320s, 345s) must not fire pace_drift:3.
+    s = resumed_session(km_marks_s=[300.0, 620.0, 965.0], elapsed_s=980.0, distance_m=3050.0)
+    s.run.elapsed = 980.0
+    s.run.distance = 3050.0
+    s.run.run(30, speed=1000 / 360, hr=150)
+    assert "pace_drift" not in s.kinds()
+
+    # Completing split 4 even slower DOES fire pace_drift once, and never repeats even > 600s later.
+    s.run.run(380, speed=1000 / 370, hr=150)  # finishes split 4 at ~370s
+    assert s.kinds().count("pace_drift") == 1
+    s.run.run(700, speed=1.0, hr=140, cadence=130)  # > 600s without finishing split 5
+    assert s.kinds().count("pace_drift") == 1

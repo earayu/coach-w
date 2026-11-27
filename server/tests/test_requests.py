@@ -9,7 +9,7 @@ from test_brain import Session
 from coachw.agent.coach import CoachAgent
 from coachw.agent.cue_writer import CueWriter
 from coachw.agent.memory import AthleteMemory
-from coachw.coach.requests import MIN_EVERY_S, Requests
+from coachw.coach.requests import MIN_EVERY_M, MIN_EVERY_S, Requests, parse_distance_m
 from coachw.protocol import CuePriority
 
 
@@ -135,3 +135,63 @@ def test_the_coach_tools_remember_forget_and_note_feedback(tmp_path):
     assert record["text"] == "教练应该能帮我暂停" and record["athlete_id"] == "athlete-1"
     no_memory = CoachAgent(s.brain)
     assert json.loads(asyncio.run(no_memory.note_feedback(None, "x")))["ok"] is False
+
+
+def test_distance_requests_parse_persist_and_fold_into_splits(tmp_path):
+    assert parse_distance_m("每公里报心率") == 1000.0
+    assert parse_distance_m("每两公里提醒我喝水") == 2000.0
+    assert parse_distance_m("每500米报配速") == 500.0
+    assert parse_distance_m("每分钟报心率") is None
+
+    r = Requests()
+    dreq = r.add("每公里报心率", every_m=1000, lasting=False, now=0, distance_m=1200)
+    assert dreq.next_m == 2000.0
+    assert dreq.describe() == "#1「每公里报心率」（每 1 公里）"
+    assert r.due(10, distance_m=1999) == []
+    assert r.due(11, distance_m=2000) == [dreq]
+    assert dreq.next_m == 3000.0
+    assert r.add("short", every_m=10, lasting=False, now=0).every_m == MIN_EVERY_M
+
+    # Tool infers every_km from text even if the model leaves every_km=0, and persists it.
+    s = Session()
+    memory = AthleteMemory(tmp_path, "athlete-d")
+    agent = CoachAgent(s.brain, keeps_transcript=True, memory=memory)
+    res = json.loads(asyncio.run(agent.remember_request(None, "每公里报心率")))
+    assert res["ok"] and res["every_m"] == 1000.0
+    loaded = AthleteMemory(tmp_path, "athlete-d").load()
+    assert len(loaded) == 1 and loaded[0].every_m == 1000.0
+
+    # At 1 km, the per-km request folds into split:1 rather than emitting two separate cues.
+    s.run.run(340, speed=1000 / 330, hr=155)
+    splits = [d for d in s.deliveries if d.cue.event.kind == "split:1"]
+    requests = [d for d in s.deliveries if d.cue.event.kind == "request"]
+    assert len(splits) == 1 and "每公里报心率" in splits[0].instructions
+    assert requests == []
+
+    # Non-split distance request (every 500m) fires its own request cue at 500m.
+    s2 = Session()
+    s2.brain.add_request("提醒喝水", every_m=500, lasting=False)
+    s2.run.run(200, speed=3.0, hr=150)  # 600m
+    reqs = [d for d in s2.deliveries if d.cue.event.kind == "request"]
+    assert len(reqs) == 1 and "提醒喝水" in reqs[0].instructions
+
+
+def test_check_in_backs_off_when_athlete_is_silent_and_resets_when_speaking():
+    s = Session()
+    s.brain.check_in_s = 75
+    s.run.run(700, speed=1.5)
+    checks = [d.cue.created_at for d in s.deliveries if d.cue.event.kind == "check_in"]
+    assert len(checks) >= 3
+    gaps = [b - a for a, b in zip(checks, checks[1:], strict=False)]
+    assert gaps[0] >= 150 and gaps[1] >= 300
+
+    # Athlete speaks -> backoff resets back to 75s.
+    s.brain.note_athlete_spoke()
+    spoke_at = s.clock.now
+    s.run.run(100, speed=1.5)
+    after = [
+        d.cue.created_at
+        for d in s.deliveries
+        if d.cue.event.kind == "check_in" and d.cue.created_at > spoke_at
+    ]
+    assert after and after[0] - spoke_at < 90

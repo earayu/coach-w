@@ -64,9 +64,11 @@ MIN_WINDOW_COVERAGE = 0.6
 # Moving time counts gaps between samples up to this long (a late batch is not a long run).
 MAX_MOVING_GAP_S = 5.0
 # A climb is measured over at least this much distance; GPS altitude is noisy over less.
-MIN_CLIMB_DISTANCE_M = 40.0
+MIN_CLIMB_DISTANCE_M = 80.0
 # Samples averaged at each end of a climb window to smooth altitude noise.
 CLIMB_EDGE_SAMPLES = 3
+# Deadband for cumulative elevation gain/loss so barometric/GPS jitter does not inflate totals.
+ALT_DEADBAND_M = 2.0
 
 # Whether the readings look like the athlete is doing the activity (from its profile).
 Moving = Callable[[Mapping[str, float]], bool]
@@ -148,7 +150,7 @@ class MetricsState:
         *,
         split_m: float | None = 1000.0,
         baseline_s: tuple[float, float] = (300.0, 900.0),
-        history_s: float = 300.0,
+        history_s: float = 600.0,
         stale_after_s: float = STALE_AFTER_S,
         clock: Callable[[], float] = time.monotonic,
         moving: Moving | None = None,
@@ -167,6 +169,7 @@ class MetricsState:
         self._received_at: float | None = None
         self._samples: deque[Sample] = deque()
         self._splits: list[Split] = []
+        self.resumed_splits: int = 0
         # (elapsed_s, distance_m) where the current split began; None until a boundary is witnessed
         self._split_start: tuple[float, float] | None = (0.0, 0.0)
         self._next_split = 1
@@ -174,6 +177,11 @@ class MetricsState:
         self._baseline = _Means()
         self._session = _Means()
         self._last_distance: tuple[float, float] | None = None  # (elapsed_s, distance_m)
+        self._start_alt_m: float | None = None
+        self._alt_anchor: float | None = None
+        self._alt_window: deque[float] = deque(maxlen=CLIMB_EDGE_SAMPLES)
+        self._ascent_m = 0.0
+        self._descent_m = 0.0
         self.started = False
         self.first_elapsed_s: float | None = None
 
@@ -211,8 +219,28 @@ class MetricsState:
         self._session.add(values)
         if self.baseline_s[0] <= frame.elapsed_s < self.baseline_s[1]:
             self._baseline.add(values)
+        if (alt := values.get("alt_m")) is not None:
+            self._track_altitude(alt)
         if frame.distance_m is not None:
             self._track_splits(frame.elapsed_s, float(frame.distance_m), values)
+
+    def _track_altitude(self, alt_m: float) -> None:
+        self._alt_window.append(alt_m)
+        if len(self._alt_window) < CLIMB_EDGE_SAMPLES:
+            return
+        smoothed = sum(self._alt_window) / len(self._alt_window)
+        if self._start_alt_m is None:
+            self._start_alt_m = smoothed
+            self._alt_anchor = smoothed
+            return
+        assert self._alt_anchor is not None
+        delta = smoothed - self._alt_anchor
+        if delta >= ALT_DEADBAND_M:
+            self._ascent_m += delta
+            self._alt_anchor = smoothed
+        elif delta <= -ALT_DEADBAND_M:
+            self._descent_m += -delta
+            self._alt_anchor = smoothed
 
     def _track_splits(self, elapsed: float, distance: float, values: dict[str, float]) -> None:
         self._split_means.add(values)
@@ -281,6 +309,7 @@ class MetricsState:
             self._next_split = len(self._splits) + 1
             self._split_start = (start, len(self._splits) * self.split_m)
             self._split_means = _Means()
+            self.resumed_splits = len(self._splits)
         if distance_m is not None and self._last_distance is None:
             self._last_distance = (elapsed_s, distance_m)
         count = max(1, samples)
@@ -420,6 +449,57 @@ class MetricsState:
 
     def session_mean(self, name: str) -> float | None:
         return self._session.get(name)
+
+    @property
+    def session_ascent_m(self) -> float | None:
+        return None if self._start_alt_m is None else self._ascent_m
+
+    @property
+    def session_descent_m(self) -> float | None:
+        return None if self._start_alt_m is None else self._descent_m
+
+    @property
+    def session_net_alt_m(self) -> float | None:
+        if self._start_alt_m is None or not self._alt_window:
+            return None
+        current = sum(self._alt_window) / len(self._alt_window)
+        return current - self._start_alt_m
+
+    def trend(self, minutes: int = 5) -> list[dict[str, Any]]:
+        """Per-minute averages and altitude change over the last `minutes` of running time,
+        oldest first."""
+        if not self._samples:
+            return []
+        mins = max(1, min(int(minutes), int(self.history_s // 60) or 1))
+        end = self._samples[-1].elapsed_s
+        buckets: list[dict[str, Any]] = []
+        for offset in range(mins, 0, -1):
+            lo = end - offset * 60.0
+            hi = end - (offset - 1) * 60.0
+            pts = [s for s in self._samples if lo < s.elapsed_s <= hi]
+            if not pts:
+                continue
+            row: dict[str, Any] = {
+                "minute_ago": offset,
+                "elapsed_min": round(hi / 60.0, 1),
+            }
+            for field_name, out_key in (
+                ("hr_bpm", "avg_hr_bpm"),
+                ("speed_mps", "avg_speed_mps"),
+                ("cadence_spm", "avg_cadence_spm"),
+            ):
+                vals = [s.values[field_name] for s in pts if field_name in s.values]
+                if vals:
+                    row[out_key] = round(sum(vals) / len(vals), 2)
+            alts = [s.values["alt_m"] for s in pts if "alt_m" in s.values]
+            if alts:
+                row["avg_alt_m"] = round(sum(alts) / len(alts), 1)
+                if len(alts) >= 2 * CLIMB_EDGE_SAMPLES:
+                    head = sum(alts[:CLIMB_EDGE_SAMPLES]) / CLIMB_EDGE_SAMPLES
+                    tail = sum(alts[-CLIMB_EDGE_SAMPLES:]) / CLIMB_EDGE_SAMPLES
+                    row["alt_change_m"] = round(tail - head, 1)
+            buckets.append(row)
+        return buckets
 
     # -- tool results --------------------------------------------------------------------------
 

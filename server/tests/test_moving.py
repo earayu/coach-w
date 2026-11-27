@@ -93,3 +93,89 @@ def test_an_uphill_explains_the_heart_rate():
     assert "地形：最近一分钟在上坡" in s.brain.status_summary()
     metrics = s.brain.get_metrics()
     assert metrics["grade_pct"] > 3 and metrics["alt_change_1min_m"] > 3
+
+
+def test_minor_elevation_jitter_is_ignored_while_long_gentle_climb_is_detected():
+    # Small 2m rise over 60s at walking speed (60m < 80m min distance) should not trigger.
+    small = MetricsState(moving=RUNNING.moving)
+    for i in range(1, 90):
+        small.update(
+            frame(
+                i, float(i), distance_m=1.0 * i, alt_m=10 + 0.04 * i, speed_mps=1.0, cadence_spm=125
+            )
+        )
+    assert small.climb(60) is None
+
+    # Gentle 2.3% climb over 3 minutes (~12m gain over 540m) triggers the 3-minute uphill rule.
+    s = Session()
+    for i in range(1, 300):
+        s.clock.advance(1)
+        s.brain.on_frame(
+            frame(
+                i,
+                float(i),
+                distance_m=3.0 * i,
+                alt_m=10 + (0.07 * (i - 60) if i > 60 else 0),
+                speed_mps=3.0,
+                cadence_spm=170,
+                hr_bpm=152,
+            )
+        )
+        s.tick()
+    assert "uphill" in s.kinds()
+    assert "累计爬升" in s.brain.status_summary()
+
+
+def test_trend_and_history_tools():
+    import asyncio
+    import json
+    from types import SimpleNamespace
+
+    from test_agent import FakeParticipant
+
+    from coachw.agent.coach import INSTRUCTIONS, CoachAgent
+    from coachw.agent.worker import ask_phone_for_history
+
+    s = Session()
+    for i in range(1, 200):
+        s.clock.advance(1)
+        s.brain.on_frame(
+            frame(
+                i,
+                float(i),
+                distance_m=3.0 * i,
+                alt_m=10 + 0.05 * i,
+                speed_mps=3.0,
+                cadence_spm=170,
+                hr_bpm=140 + (i // 60) * 5,
+            )
+        )
+    trend = s.brain.get_trend(minutes=3)
+    assert trend["available"] and len(trend["per_minute"]) == 3
+    assert trend["per_minute"][0]["avg_hr_bpm"] < trend["per_minute"][-1]["avg_hr_bpm"]
+    assert "avg_pace_per_km" in trend["per_minute"][0]
+    assert trend["session_ascent_m"] > 5
+
+    # Canned reply example must not appear in INSTRUCTIONS.
+    assert "收到，我会继续盯着心率，有情况及时提醒你" not in INSTRUCTIONS
+
+    # get_history calls phone RPC coach.history
+    payload = {
+        "available": True,
+        "count": 1,
+        "records": [{"activity": "running", "distance_m": 5000}],
+    }
+    phone = FakeParticipant(json.dumps(payload))
+    room = SimpleNamespace(local_participant=phone)
+    res = asyncio.run(ask_phone_for_history(room, "athlete-1", "running", 5))
+    assert res["available"] and res["count"] == 1
+    assert phone.calls[0]["method"] == "coach.history"
+
+    async def lookup(activity: str, limit: int) -> dict:
+        return payload | {"activity": activity, "limit": limit}
+
+    agent = CoachAgent(s.brain, workout_history=lookup)
+    tool_res = json.loads(asyncio.run(agent.get_history(None, activity="running", limit=3)))
+    assert tool_res["available"] and tool_res["limit"] == 3
+    trend_res = json.loads(asyncio.run(agent.get_trend(None, minutes=3)))
+    assert trend_res["available"] and trend_res["minutes"] == 3

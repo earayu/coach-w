@@ -11,6 +11,7 @@ from livekit.agents import Agent, RunContext, function_tool, llm
 
 from coachw.agent.memory import AthleteMemory
 from coachw.coach.brain import QUIET_MAX_MIN, CoachBrain
+from coachw.coach.requests import parse_distance_m
 from coachw.profiles.base import ProfileTool
 from coachw.session import CONTROL_ACTIONS, STARTABLE_ACTIVITIES
 
@@ -33,14 +34,16 @@ INSTRUCTIONS = """\
 - 记住这次对话里用户说过的话。用户让你复述、回忆或者问"我刚才说了什么"，就照这次对话的内容把他的原意复述出来。
 - 不要把同一句话说两遍；上一句没有回答到点子上，就换个说法直接回答。用户追问同一个问题，说明上次的回答没让他满意：先接住他的追问，换个角度或多给一点理由，绝不一字不差地重复自己上一句。
 - 用户只回一个"对""嗯""好"时，简单应一声或接着往下聊，不要把你上一句话再说一遍。
-- 回应和确认的话也要换着说，不要每次都用同一句（比如"收到，我会继续盯着心率，有情况及时提醒你"）。用户夸你，简单谢一句就行。
+- 回应和确认的话简短自然、每次换着说，不要套用固定句式，也不要每次都承诺"我会继续盯着数据、有情况及时提醒"。用户夸你，简单谢一句就行。
 - 被问是什么模型、谁做的、用的什么技术：用你自己的话说明你是 coach-w 的语音教练，底层用的哪家模型不方便透露。用户再问一次，说明他不满意上一次的回答：这次换一个角度，比如说说为什么不方便说、或者你能帮他做什么，不要复读，再自然地把话题带回运动上。
 - 做不到的事直说做不到，并说清楚现在能做什么。
 - 你能帮用户操作手表：开始运动（start_workout）、暂停（pause_workout）、继续（resume_workout）、结束（end_workout）。用户要你做这些时直接调用，不要让他自己去按。结束运动不能撤回：只有用户明确说结束（比如"结束吧""今天就跑到这"）才调用，拿不准就先问一句。
-- 用户让你之后做某件事（比如"每分钟报一次心率""每公里提醒我喝水""别叫我加油"）时，调用 remember_request 记下来：有时间间隔就带上 every_minutes；运动中临时提的要求只管这次运动，用户明确说以后每次运动都这样（比如"以后跑步都别叫我加油"）时 lasting 才传 true。到时间了系统会用【教练提示】叫你。用户说不用了就调用 forget_request。只口头答应不调用，你过一会儿就会忘。
+- 用户让你之后做某件事（比如"每分钟报一次心率""每公里提醒我喝水""别叫我加油"）时，调用 remember_request 记下来：有时间间隔就带上 every_minutes，有距离间隔就带上 every_km（比如每公里传 1、每两公里传 2、每 500 米传 0.5）；运动中临时提的要求只管这次运动，用户明确说以后每次运动都这样（比如"以后跑步都别叫我加油"）时 lasting 才传 true。到时间或到距离了系统会用【教练提示】叫你。用户说不用了就调用 forget_request。只口头答应不调用，你过一会儿就会忘。
 - 【运动状态】里"用户交代过"列着这些要求，说话时照着做。
 - 【运动状态】里有现在的时间。用户问几点了、多久了，或者觉得你反应慢、你没听清他说了什么时，按时间理解，不要猜。
 - 用户问自己在哪、附近有什么、去哪找厕所或补给、前面是什么地方时，调用 look_around（可以带要找的东西），照结果里的地名、距离和方向回答；没有结果就直说找不到，不要编地名。
+- 用户问最近几分钟心率、配速、海拔怎么变化或累计爬升了多少时，调用 get_trend。
+- 用户问以前跑得怎么样、上次配速多少、最近跑了几次或和以前对比时，调用 get_history 查手机本地的历史记录。
 
 像国内专业的教练那样带练：
 - 给具体、可执行、有依据的建议，并用一句话讲清楚为什么，比如训练原理、受伤风险、发力方式。不说"多喝水""加油"这种空话。
@@ -72,7 +75,7 @@ INSTRUCTIONS = """\
 - 绝不说自己看不到数据、没在看、懒得查、"得看手表传过来的数据"之类的话。【运动状态】里写着没有实时数据时，直说手表现在没传来这项数据。
 
 数字规则（最重要）：
-- 你说出的每一个运动数字（心率、配速、距离、时间、步频、功率、卡路里等）都必须来自【运动状态】、本轮刚调用的工具结果（get_metrics、get_progress、end_workout_summary），或本轮【教练提示】里给出的数字。
+- 你说出的每一个运动数字（心率、配速、距离、时间、步频、功率、卡路里等）都必须来自【运动状态】、本轮刚调用的工具结果（get_metrics、get_progress、get_trend、get_history、end_workout_summary），或本轮【教练提示】里给出的数字。
 - 要分段、目标、剩余距离或更多指标时，调用 get_progress 或 get_metrics 再回答。只回答用户这一次问的那几项，不要重复你之前说过的话。
 - 禁止估计、推算、编造或沿用之前记住的数字：旧的工具结果和你说过的数字都已经过时。哪里都没有某项数据，或工具返回 available 为 false，就直接说现在拿不到这项数据。
 - get_metrics 结果里的 spoken 是当前运动下每项指标的口语读法，照着读（有的运动读速度而不是配速）。
@@ -173,6 +176,8 @@ PlaceLookup = Callable[[str], Awaitable[dict[str, Any]]]
 WorkoutStarter = Callable[[str], Awaitable[dict[str, Any]]]
 # Asks the athlete's phone to pause, resume or end the workout (`coach.control`, spec 7.6).
 WorkoutControl = Callable[[str], Awaitable[dict[str, Any]]]
+# Asks the athlete's phone for local workout history summaries (`coach.history`, spec 11).
+WorkoutHistory = Callable[[str, int], Awaitable[dict[str, Any]]]
 # The same control asked twice this soon (tool and words both heard it) is one request.
 CONTROL_DEDUP_S = 10.0
 # A second request this soon after the first is the same start (tool and words both asked).
@@ -188,6 +193,7 @@ class CoachAgent(Agent):
         places: PlaceLookup | None = None,
         start: WorkoutStarter | None = None,
         control: WorkoutControl | None = None,
+        workout_history: WorkoutHistory | None = None,
         memory: AthleteMemory | None = None,
     ) -> None:
         self._base_instructions = instructions(keeps_transcript, history)
@@ -198,6 +204,7 @@ class CoachAgent(Agent):
         self._start_asked_at: float | None = None
         self._control = control
         self._control_asked: tuple[str, float] | None = None
+        self._workout_history = workout_history
         self.memory = memory
         self._base_tools = list(self.tools)
         self._status_id: str | None = None
@@ -250,6 +257,38 @@ class CoachAgent(Agent):
         """
         result = self.brain.get_progress()
         logger.info("tool get_progress called available=%s", result["available"])
+        return as_json(result)
+
+    @function_tool()
+    async def get_trend(self, context: RunContext, minutes: int = 5) -> str:
+        """获取最近几分钟（1 到 10 分钟）每分钟的心率、配速/速度、步频、海拔变化趋势，以及本次运动累计爬升和下降。
+
+        用户问最近几分钟心率或配速怎么变化的、刚才爬了多少坡、海拔升了多少时调用。
+
+        Args:
+            minutes: 看最近几分钟，默认 5，最多 10。
+        """
+        result = self.brain.get_trend(minutes)
+        logger.info("tool get_trend called available=%s", result["available"])
+        return as_json(result)
+
+    @function_tool()
+    async def get_history(self, context: RunContext, activity: str = "", limit: int = 5) -> str:
+        """查询用户手机本地保存的历史运动记录摘要（日期、运动类型、用时、距离、平均心率、配速、分段和总计）。
+
+        用户问上次跑得怎么样、之前配速多少、最近跑了几次或和以前对比时调用。
+
+        Args:
+            activity: 按运动类型筛选（running/walking/hiking/cycling/other）；不限则传空字符串。
+            limit: 最多返回最近几次记录，默认 5，最多 20。
+        """
+        clamped = max(1, min(int(limit), 20))
+        if self._workout_history is None:
+            result: dict[str, Any] = {"available": False, "reason": "phone not connected"}
+        else:
+            result = await self._workout_history(activity.strip(), clamped)
+        # workout history is health data: log only the outcome (spec 11)
+        logger.info("tool get_history called available=%s", result.get("available"))
         return as_json(result)
 
     @function_tool()
@@ -370,24 +409,41 @@ class CoachAgent(Agent):
 
     @function_tool()
     async def remember_request(
-        self, context: RunContext, text: str, every_minutes: float = 0, lasting: bool = False
+        self,
+        context: RunContext,
+        text: str,
+        every_minutes: float = 0,
+        every_km: float = 0,
+        lasting: bool = False,
     ) -> str:
-        """记下用户让你之后要做的事，到时间系统会提醒你去做。
+        """记下用户让你之后要做的事，到时间或到距离系统会提醒你去做。
 
-        用户说"每分钟报一次心率""每两公里提醒我补水""以后别叫我加油"这类要求时调用。
+        用户说"每分钟报一次心率""每公里报心率""每两公里提醒我补水""以后别叫我加油"这类要求时调用。
 
         Args:
             text: 用户的要求，用一句话写清楚要做什么，例如"报心率"。
-            every_minutes: 每隔几分钟做一次；不是定时的要求传 0。
+            every_minutes: 每隔几分钟做一次；不是按时间定时的传 0。
+            every_km: 每隔几公里做一次（如每公里传 1，每 500 米传 0.5）；不是按距离的传 0。
             lasting: 以后每次运动都要这样时传 true；只管这次运动传 false。
         """
         every_s = every_minutes * 60 if every_minutes and every_minutes > 0 else None
-        request = self.brain.add_request(text, every_s=every_s, lasting=lasting)
+        every_m = every_km * 1000 if every_km and every_km > 0 else None
+        if every_s is None and every_m is None:
+            every_m = parse_distance_m(text)
+        request = self.brain.add_request(text, every_s=every_s, every_m=every_m, lasting=lasting)
         if request is None:
             return as_json({"ok": False, "reason": "empty request or too many requests"})
         self._remember()
-        logger.info("tool remember_request called every=%s lasting=%s", every_s, lasting)
-        return as_json({"ok": True, "id": request.id, "every_s": request.every_s})
+        logger.info(
+            "tool remember_request called every_s=%s every_m=%s lasting=%s",
+            request.every_s,
+            request.every_m,
+            lasting,
+        )
+        out: dict[str, Any] = {"ok": True, "id": request.id, "every_s": request.every_s}
+        if request.every_m is not None:
+            out["every_m"] = request.every_m
+        return as_json(out)
 
     @function_tool()
     async def forget_request(self, context: RunContext, request_id: int = 0) -> str:

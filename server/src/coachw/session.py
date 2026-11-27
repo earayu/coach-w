@@ -41,6 +41,9 @@ STARTABLE_ACTIVITIES = ("running", "walking", "hiking", "cycling", "other")
 CONTROL_METHOD = "coach.control"
 CONTROL_ACTIONS = ("pause", "resume", "end")
 
+# RPC the coach calls on the athlete's phone to read local workout history summaries (spec 11).
+HISTORY_METHOD = "coach.history"
+
 
 def parse_athlete_id(raw: str) -> str:
     """Normalize an athlete id (a UUID generated on the phone). Raises ValueError."""

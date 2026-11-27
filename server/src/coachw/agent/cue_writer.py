@@ -30,7 +30,9 @@ SYSTEM = """\
 - 只用教练提示和运动状态里出现的数字，不要编数字，不要估算。
 - 先用常识判断这些数据合不合理、和用户正在做的运动对不对得上。\
 手表上选的运动可能和用户实际在做的不一样，传感器也会出错。说不通就直说哪里不对、猜一猜可能的原因、问用户，不要夸。
-- 结合最近的对话，不要重复刚说过的话。
+- 结合最近的对话，不要重复刚说过的话；已经播报过的公里分段、掉速提醒或问过的问题绝不重复。
+- 如果最近几句全是教练在说话、用户没有回应，且没有重要新变化，\
+就只输出 SKIP，不要反复追问"你是不是在走路""感觉怎么样"。
 - 只输出要说的话本身，不要引号，不要解释，不要 markdown。
 - 教练提示让你自己判断要不要说时，没什么值得说的就只输出 SKIP。不要为了说而说，\
 也不要重复最近几分钟说过的内容。
@@ -43,6 +45,13 @@ SAY = "【教练提示】把下面这句话自然地说给用户听，意思和�
 HISTORY_LINES = 8
 
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
+_CLOCK = re.compile(r"现在时间\s*\d{2}:\d{2}:\d{2}")
+_PUNCT = re.compile(r"[\s\W_]+")
+
+
+def _same_line(a: str, b: str) -> bool:
+    na, nb = _PUNCT.sub("", a), _PUNCT.sub("", b)
+    return bool(na) and na == nb
 
 
 def conversation_of(items: Iterable[Any], limit: int = HISTORY_LINES) -> list[tuple[str, str]]:
@@ -106,10 +115,17 @@ class CueWriter:
         if not text:
             return fallback
         # AGENTS.md 2: every number must come from the facts the coach system gave
-        if invented := numbers_in(text) - numbers_in(prompt):
+        if invented := numbers_in(text) - numbers_in(_CLOCK.sub("", prompt)):
             logger.info("writer added %d numbers of its own; using the plain cue", len(invented))
             return fallback
         cleaned = text.strip().strip('"“”「」').strip()
         if not cleaned or cleaned.upper().startswith(SKIP):
             return fallback
+        # Never repeat the coach's immediately preceding line verbatim.
+        last_coach = next(
+            (line for kind, line in reversed(self._history()) if kind == "coach"), None
+        )
+        if last_coach is not None and _same_line(cleaned, last_coach):
+            logger.info("writer repeated the last coach line; dropping duplicate")
+            return None if delivery.optional else fallback
         return SAY.format(text=cleaned)

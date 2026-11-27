@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from coachw.coach.cue_queue import Cue, CueQueue, Release
 from coachw.coach.director import GOAL_KEY, Director
 from coachw.coach.events import CoachEvent, EventEngine, RuleContext
-from coachw.coach.format import say_distance, say_duration, speed_kmh
+from coachw.coach.format import format_pace, say_distance, say_duration, speed_kmh
 from coachw.coach.metrics_state import JOINED_AT_START_S, Climb, MetricsState
 from coachw.coach.requests import Request, Requests
 from coachw.profiles.base import ActivityProfile, Athlete
@@ -41,19 +41,25 @@ NEW_WORKOUT_REWIND_S = 5.0
 # The athlete's local time; the phone does not send its time zone yet.
 DEFAULT_TZ = ZoneInfo("Asia/Shanghai")
 
-# Terrain is described from the last minute; flatter than this is flat.
+# Terrain is described from the last 1 min (or 3 min for gentle climbs); flatter than this is flat.
 CLIMB_WINDOW_S = 60.0
 CLIMB_MENTION_GRADE = 0.02
 CLIMB_MENTION_M = 3.0
+CLIMB_LONG_WINDOW_S = 180.0
+CLIMB_LONG_MENTION_M = 6.0
+SESSION_ALT_MENTION_M = 10.0
 
 # A due request is worth saying for this long, then the next one comes.
 REQUEST_TTL_S = 20.0
 CHECK_IN_TTL_S = 15.0
+# Proactive check-in / companion backoff caps when the athlete stays silent.
+CHECK_IN_MAX_S = 420.0
+COMPANION_MAX_S = 480.0
 
 CHECK_IN_FACTS = (
     "定时检查，不是用户说的话。想一想现在要不要主动说一句：用户交代过的事、"
-    "数据里值得提的变化（心率、配速、坡度、跑姿）、这个阶段该怎么跑，或者陪他聊一句。"
-    "值得说就说一两句；没什么值得说的，就只输出 SKIP。"
+    "数据里值得提的新变化（心率、配速、坡度、跑姿）、这个阶段该怎么跑，或者简短陪聊一句。"
+    "不要重复已经报过的分段、掉速或已经问过的问题；没什么新变化或值得说的，就只输出 SKIP。"
 )
 
 # Cues the watch also buzzes for. Companion chat stays in the ear only.
@@ -82,15 +88,22 @@ class Delivery:
         return self.cue.event.optional
 
 
-def describe_climb(climb: Climb | None) -> str | None:
-    """ "上坡，海拔升了 5 米，坡度约 4%" for a real slope over the last minute, else None."""
-    if climb is None or (
-        abs(climb.grade) < CLIMB_MENTION_GRADE and abs(climb.alt_change_m) < CLIMB_MENTION_M
+def describe_climb(
+    climb: Climb | None,
+    *,
+    window_label: str = "最近一分钟",
+    min_alt_m: float = CLIMB_MENTION_M,
+) -> str | None:
+    """ "最近一分钟在上坡，海拔升了 5 米，坡度约 4%" for a real slope, else None."""
+    if (
+        climb is None
+        or abs(climb.grade) < CLIMB_MENTION_GRADE
+        or abs(climb.alt_change_m) < min_alt_m
     ):
         return None
     way, verb = ("上坡", "升") if climb.alt_change_m > 0 else ("下坡", "降")
     return (
-        f"最近一分钟在{way}，海拔{verb}了 {abs(climb.alt_change_m):.0f} 米，"
+        f"{window_label}在{way}，海拔{verb}了 {abs(climb.alt_change_m):.0f} 米，"
         f"坡度约 {abs(climb.grade) * 100:.0f}%"
     )
 
@@ -145,6 +158,7 @@ class CoachBrain:
         self.queue = CueQueue(max_per_minute=3, min_gap_s=10)
         self.started_at = clock()
         self.last_talk_at: float | None = None
+        self._unanswered_proactive = 0
         self.alerts: dict[str, int] = {}
         self.profile_version = 0
         self.resumed: CoachResume | None = None
@@ -161,7 +175,11 @@ class CoachBrain:
             or self._starts_new_workout(latest, frame)
         ):
             self._load(self._profiles(frame.activity))
-        return self.state.update(frame)
+        first_frame = self.state.latest is None
+        updated = self.state.update(frame)
+        if first_frame and frame.distance_m is not None and frame.elapsed_s > JOINED_AT_START_S:
+            self.requests.sync_distance(frame.distance_m)
+        return updated
 
     def _starts_new_workout(self, latest: MetricsFrame | None, frame: MetricsFrame) -> bool:
         """The voice session outlives a workout: the next one must not inherit its state (its
@@ -193,6 +211,7 @@ class CoachBrain:
         self.queue = CueQueue(max_per_minute=c.max_per_minute, min_gap_s=c.min_gap_s)
         self.queue.quiet_until = quiet_until
         self.alerts = {}
+        self._unanswered_proactive = 0
         self.resumed = None
         self.profile_version += 1
 
@@ -219,6 +238,8 @@ class CoachBrain:
             samples=resume.samples or 1,
         )
         self.director.resume(self.state, resume.elapsed_s)
+        if resume.distance_m is not None:
+            self.requests.sync_distance(resume.distance_m)
         self.resumed = resume
         return True
 
@@ -239,11 +260,36 @@ class CoachBrain:
 
     # -- timing --------------------------------------------------------------------------------
 
+    def note_athlete_spoke(self) -> None:
+        """Reset proactive backoff once the athlete speaks."""
+        self._unanswered_proactive = 0
+        self.last_talk_at = self._clock()
+
+    def note_check_in_skipped(self) -> None:
+        """A check-in answered with SKIP did not nag the athlete; undo its backoff increment."""
+        if self._unanswered_proactive > 0:
+            self._unanswered_proactive -= 1
+
+    def _proactive_backoff(self) -> float:
+        return float(2 ** min(self._unanswered_proactive, 3))
+
+    def _effective_check_in_s(self) -> float | None:
+        if not self.check_in_s:
+            return None
+        return min(self.check_in_s * self._proactive_backoff(), CHECK_IN_MAX_S)
+
+    def _companion_backoff(self) -> float:
+        if self.profile is None or self.profile.cadence.companion_s <= 0:
+            return 1.0
+        return min(self._proactive_backoff(), COMPANION_MAX_S / self.profile.cadence.companion_s)
+
     def tick(self, *, user_speaking: bool, agent_speaking: bool) -> Delivery | None:
         """Evaluate the timeline and rules, then release at most one cue."""
         if self.profile is None or self.director is None or self.engine is None:
             return None
         now = self._clock()
+        if user_speaking:
+            self._unanswered_proactive = 0
         if user_speaking or agent_speaking:
             # a conversation counts as talk: companion chat waits its interval after it too
             self.last_talk_at = now
@@ -253,12 +299,18 @@ class CoachBrain:
         )
         since_alert = now - (self.queue.last_alert_at or self.started_at)
         events = self.engine.evaluate(ctx) + self.director.evaluate(
-            self.state, self.targets, since_spoken_s=since_spoken, since_alert_s=since_alert
+            self.state,
+            self.targets,
+            since_spoken_s=since_spoken,
+            since_alert_s=since_alert,
+            quiet_backoff=self._companion_backoff(),
         )
         if self.state.is_running and self.state.moving_started and not self.state.is_stale():
-            events += [self._request_event(r) for r in self.requests.due(now)]
-            if self.check_in_s and since_spoken >= self.check_in_s:
-                events.append(self._check_in_event())
+            due = self.requests.due(now, distance_m=self.state.distance_m)
+            events = self._merge_due_requests(events, due)
+            check_in_interval = self._effective_check_in_s()
+            if check_in_interval and since_spoken >= check_in_interval:
+                events.append(self._check_in_event(check_in_interval))
         for event in events:
             self.queue.offer(event, now)
         release = self.queue.next(now, user_speaking=user_speaking, agent_speaking=agent_speaking)
@@ -266,23 +318,73 @@ class CoachBrain:
             return None
         if release.cue.priority is CuePriority.COMPANION:
             self.director.companion_spoken()
+            self._unanswered_proactive += 1
         return self._deliver(release)
 
-    def add_request(self, text: str, *, every_s: float | None, lasting: bool) -> Request | None:
-        return self.requests.add(text, every_s=every_s, lasting=lasting, now=self._clock())
+    def _merge_due_requests(self, events: list[CoachEvent], due: list[Request]) -> list[CoachEvent]:
+        if not due:
+            return events
+        split_idx = next(
+            (i for i in range(len(events) - 1, -1, -1) if events[i].kind.startswith("split:")),
+            None,
+        )
+        folded: list[Request] = []
+        standalone: list[Request] = []
+        for r in due:
+            if split_idx is not None and r.every_m is not None:
+                folded.append(r)
+            else:
+                standalone.append(r)
+        out = list(events)
+        if folded and split_idx is not None:
+            ev = out[split_idx]
+            readings = self.readings()
+            extra = "；".join(f"「{r.text}」" for r in folded)
+            live = f"（此刻实时数据：{readings}）" if readings else ""
+            out[split_idx] = CoachEvent(
+                kind=ev.kind,
+                priority=ev.priority,
+                facts=f"{ev.facts} 另外用户要求每段{extra}{live}，一并说到。",
+                cooldown_key=ev.cooldown_key,
+                cooldown_s=ev.cooldown_s,
+                ttl_s=ev.ttl_s,
+                haptic=ev.haptic,
+                watch_text=ev.watch_text,
+                optional=ev.optional,
+            )
+        out += [self._request_event(r) for r in standalone]
+        return out
+
+    def add_request(
+        self,
+        text: str,
+        *,
+        every_s: float | None = None,
+        every_m: float | None = None,
+        lasting: bool = False,
+    ) -> Request | None:
+        return self.requests.add(
+            text,
+            every_s=every_s,
+            every_m=every_m,
+            lasting=lasting,
+            now=self._clock(),
+            distance_m=self.state.distance_m,
+        )
 
     def restore_requests(self, saved: list[Request]) -> None:
         """Requests an earlier session was given (athlete memory); timers start from now."""
-        self.requests.restore(saved, self._clock())
+        self.requests.restore(saved, self._clock(), distance_m=self.state.distance_m)
 
     def _request_event(self, request: Request) -> CoachEvent:
         readings = self.readings()
         data = f"手表此刻的数据：{readings}。" if readings else "手表此刻没有实时数据。"
+        trigger = "到距离了" if request.every_m and not request.every_s else "到时间了"
         return CoachEvent(
             kind="request",
             priority=CuePriority.MILESTONE,
             facts=(
-                f"用户之前要求：「{request.text}」，现在到时间了。{data}"
+                f"用户之前要求：「{request.text}」，现在{trigger}。{data}"
                 "照他的要求说，只说他要的那几项，一句话。"
             ),
             cooldown_key=f"request:{request.id}",
@@ -290,15 +392,22 @@ class CoachBrain:
             ttl_s=REQUEST_TTL_S,
         )
 
-    def _check_in_event(self) -> CoachEvent:
+    def _check_in_event(self, cooldown_s: float) -> CoachEvent:
         return CoachEvent(
             kind="check_in",
             priority=CuePriority.COMPANION,
             facts=CHECK_IN_FACTS,
             cooldown_key="check_in",
-            cooldown_s=self.check_in_s or 0.0,
+            cooldown_s=cooldown_s,
             ttl_s=CHECK_IN_TTL_S,
             optional=True,
+        )
+
+    def _terrain_summary(self) -> str | None:
+        return describe_climb(self.state.climb(CLIMB_WINDOW_S)) or describe_climb(
+            self.state.climb(CLIMB_LONG_WINDOW_S),
+            window_label="最近三分钟",
+            min_alt_m=CLIMB_LONG_MENTION_M,
         )
 
     def _deliver(self, release: Release) -> Delivery:
@@ -319,7 +428,7 @@ class CoachBrain:
                 text=cue.event.watch_text,
             )
         label = self.profile.label if self.profile else None
-        terrain = describe_climb(self.state.climb(CLIMB_WINDOW_S))
+        terrain = self._terrain_summary()
         return Delivery(cue, cue_instructions(cue, label, terrain), release.interrupt, watch)
 
     # -- summaries and tools -------------------------------------------------------------------
@@ -371,8 +480,18 @@ class CoachBrain:
         now = self._clock()
         if self.queue.is_quiet(now):
             parts.append(f"用户要求安静，还剩约 {say_duration(self.queue.quiet_remaining_s(now))}")
-        if terrain := describe_climb(self.state.climb(CLIMB_WINDOW_S)):
+        if terrain := self._terrain_summary():
             parts.append(f"地形：{terrain}")
+        ascent, descent = self.state.session_ascent_m, self.state.session_descent_m
+        if (ascent and ascent >= SESSION_ALT_MENTION_M) or (
+            descent and descent >= SESSION_ALT_MENTION_M
+        ):
+            alt_bits = []
+            if ascent and ascent >= SESSION_ALT_MENTION_M:
+                alt_bits.append(f"累计爬升约 {ascent:.0f} 米")
+            if descent and descent >= SESSION_ALT_MENTION_M:
+                alt_bits.append(f"累计下降约 {descent:.0f} 米")
+            parts.append("海拔：" + "，".join(alt_bits))
         parts += asked
         if readings := self.readings():
             parts.append(f"手表此刻的实时数据：{readings}")
@@ -417,6 +536,15 @@ class CoachBrain:
         if climb := self.state.climb(CLIMB_WINDOW_S):
             out["alt_change_1min_m"] = round(climb.alt_change_m, 1)
             out["grade_pct"] = round(climb.grade * 100, 1)
+        if climb3 := self.state.climb(CLIMB_LONG_WINDOW_S):
+            out["alt_change_3min_m"] = round(climb3.alt_change_m, 1)
+            out["grade_3min_pct"] = round(climb3.grade * 100, 1)
+        if (ascent := self.state.session_ascent_m) is not None:
+            out["session_ascent_m"] = round(ascent, 1)
+        if (descent := self.state.session_descent_m) is not None:
+            out["session_descent_m"] = round(descent, 1)
+        if (net := self.state.session_net_alt_m) is not None:
+            out["session_net_alt_m"] = round(net, 1)
         # how the profile says each metric, so the model reads e.g. km/h on a bike
         spoken = {
             spec.label: text
@@ -425,6 +553,47 @@ class CoachBrain:
         }
         if spoken:
             out["spoken"] = spoken
+        return out
+
+    def get_trend(self, minutes: int = 5) -> dict[str, Any]:
+        """Per-minute recent trend of HR, pace/speed, cadence and altitude, plus session climb."""
+        if self.profile is None or self.state.latest is None:
+            return {"available": False, "reason": "no workout data yet"}
+        raw_buckets = self.state.trend(minutes)
+        if not raw_buckets:
+            return {"available": False, "reason": "not enough samples yet"}
+        buckets: list[dict[str, Any]] = []
+        for row in raw_buckets:
+            item = dict(row)
+            if (spd := item.pop("avg_speed_mps", None)) is not None:
+                if self.profile.speed_as_pace:
+                    if pace := format_pace(spd):
+                        item["avg_pace_per_km"] = pace
+                else:
+                    item["avg_speed_kmh"] = round(speed_kmh(spd), 1)
+            buckets.append(item)
+        out: dict[str, Any] = {
+            "available": True,
+            "activity": self.profile.name,
+            "minutes": len(buckets),
+            "per_minute": buckets,
+        }
+        if climb := self.state.climb(CLIMB_WINDOW_S):
+            out["climb_1min"] = {
+                "alt_change_m": round(climb.alt_change_m, 1),
+                "grade_pct": round(climb.grade * 100, 1),
+            }
+        if climb3 := self.state.climb(CLIMB_LONG_WINDOW_S):
+            out["climb_3min"] = {
+                "alt_change_m": round(climb3.alt_change_m, 1),
+                "grade_pct": round(climb3.grade * 100, 1),
+            }
+        if (ascent := self.state.session_ascent_m) is not None:
+            out["session_ascent_m"] = round(ascent, 1)
+        if (descent := self.state.session_descent_m) is not None:
+            out["session_descent_m"] = round(descent, 1)
+        if (net := self.state.session_net_alt_m) is not None:
+            out["session_net_alt_m"] = round(net, 1)
         return out
 
     def get_progress(self) -> dict[str, Any]:
