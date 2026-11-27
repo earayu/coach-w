@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Request
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 from coachw.api.config import ApiSettings
 from coachw.api.quota import MinuteLedger
 from coachw.api.tokens import issue_token, new_room_name
+from coachw.providers import PROVIDER_BY_ID
 from coachw.session import SessionMeta, parse_athlete_id
 
 # Only athlete_id and room are logged; never the invite code or the person's name (spec 11).
@@ -25,6 +27,12 @@ class SessionRequest(BaseModel):
     athlete_id: str
     # developer setting: text model that writes the coach's cues; "" = realtime model only
     cue_writer: str = ""
+    # voice provider chosen in the app (qwen, openrouter, openai, gemini, xai); "" = server default
+    voice_provider: str = ""
+
+
+class ProvidersRequest(BaseModel):
+    invite_code: str
 
 
 class SessionResponse(BaseModel):
@@ -70,7 +78,9 @@ def create_app(
     ledger = MinuteLedger(settings.quota_tz)
     # One room per athlete until LiveKit finishes it: a phone that reconnects (its own retry, a
     # fresh token) lands back with the same coach and conversation instead of a new one (COCH-15).
-    rooms: dict[tuple[str, str], str] = {}
+    # Keep the provider alongside the room name so switching providers starts a fresh room.
+    rooms: dict[tuple[str, str], tuple[str, str]] = {}
+    providers_by_id = {p.id: p for p in settings.providers}
     webhooks = api.WebhookReceiver(
         api.TokenVerifier(settings.livekit_api_key, settings.livekit_api_secret)
     )
@@ -78,6 +88,15 @@ def create_app(
     @app.get("/healthz")
     def healthz() -> dict:
         return {"ok": True}
+
+    @app.post("/v1/providers")
+    async def list_providers(req: ProvidersRequest) -> dict:
+        if settings.invites.find(req.invite_code) is None:
+            raise HTTPException(401, "unknown invite code")
+        return {
+            "default_provider": settings.default_provider,
+            "providers": [asdict(p) for p in settings.providers],
+        }
 
     # async on purpose: FastAPI runs plain `def` handlers in a thread pool, where parallel requests
     # and the webhook would read and replace the ledger at the same time. Nothing here blocks.
@@ -92,18 +111,43 @@ def create_app(
             logger.info("rejected: unknown invite code athlete_id=%s", athlete_id)
             raise HTTPException(401, "unknown invite code")
 
+        provider = req.voice_provider.strip()
+        if provider:
+            if provider not in PROVIDER_BY_ID:
+                raise HTTPException(422, f"unknown voice provider: {provider}")
+            status = providers_by_id.get(provider)
+            if status is None:
+                raise HTTPException(400, f"voice provider '{provider}' is not enabled")
+            if not status.configured:
+                raise HTTPException(
+                    400,
+                    f"voice provider '{provider}' is not configured (missing {status.missing_env})",
+                )
+        effective_provider = provider or settings.default_provider
+
         key = (invite.code, athlete_id)
-        candidate = rooms.get(key)
+        entry = rooms.get(key)
+        candidate = entry[0] if entry is not None and entry[1] == effective_provider else None
         # Check LiveKit before touching the ledger so everything below runs without yielding
         # to another request or webhook on the event loop.
         coach_present = candidate is not None and await has_coach(candidate)
 
         now = clock()
-        if candidate is not None and not coach_present and rooms.get(key) == candidate:
+        if (
+            candidate is not None
+            and not coach_present
+            and (cur := rooms.get(key)) is not None
+            and cur[0] == candidate
+        ):
             del rooms[key]
         ledger.supersede(invite.code, athlete_id)
         remaining = invite.daily_minutes * 60 - ledger.used_s(invite.code, now)
-        room = candidate if coach_present and rooms.get(key) == candidate else None
+        cur_entry = rooms.get(key)
+        room = (
+            candidate
+            if coach_present and cur_entry is not None and cur_entry[0] == candidate
+            else None
+        )
         reused = room is not None and ledger.reuse(
             room, invite.code, athlete_id, now, settings.token_ttl_s
         )
@@ -117,7 +161,7 @@ def create_app(
             logger.info("unknown cue writer ignored athlete_id=%s", athlete_id)
             writer = ""
         max_session_s = max(0, int(min(remaining, settings.session_max_s)))
-        meta = SessionMeta(athlete_id, max_session_s, writer)
+        meta = SessionMeta(athlete_id, max_session_s, writer, provider)
         issued = issue_token(
             api_key=settings.livekit_api_key,
             api_secret=settings.livekit_api_secret,
@@ -134,11 +178,12 @@ def create_app(
                 now,
                 settings.token_ttl_s,
             )
-            rooms[key] = issued.room
+            rooms[key] = (issued.room, effective_provider)
         logger.info(
-            "issued athlete_id=%s room=%s max_session_s=%d reused=%s",
+            "issued athlete_id=%s room=%s provider=%s max_session_s=%d reused=%s",
             athlete_id,
             issued.room,
+            effective_provider,
             meta.max_session_s,
             reused,
         )
@@ -164,7 +209,7 @@ def create_app(
             ledger.left(event.room.name, event.participant.identity, now)
         elif event.event == "room_finished":
             ledger.room_finished(event.room.name, now)
-            for key in [k for k, room in rooms.items() if room == event.room.name]:
+            for key in [k for k, entry in rooms.items() if entry[0] == event.room.name]:
                 del rooms[key]
 
     return app

@@ -2,12 +2,21 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
-from livekit.agents import llm
-from livekit.plugins import aliyun
+from livekit.agents import AgentSession, llm
+from livekit.plugins import aliyun, google, openai, silero, xai
 
-from coachw.providers import get_realtime_model
+from coachw.providers import (
+    create_agent_session,
+    get_realtime_model,
+    is_provider_configured,
+    provider_catalog,
+)
+from coachw.providers.gemini import GeminiSettings
+from coachw.providers.openai_realtime import OpenAIRealtimeSettings
+from coachw.providers.openrouter import OpenRouterSettings
 from coachw.providers.qwen import QwenSettings, _RealtimeSession, pending_user_audio
 from coachw.providers.writer import TextWriter
+from coachw.providers.xai_realtime import XAISettings
 
 
 def msg(id: str, role: str, *text: str) -> llm.ChatMessage:
@@ -32,7 +41,9 @@ def test_transcribed_turns_sync_normally():
 
 def test_unknown_provider():
     with pytest.raises(ValueError, match="unknown realtime provider"):
-        get_realtime_model("openai", {})
+        get_realtime_model("nonexistent", {})
+    with pytest.raises(ValueError, match="unknown voice provider"):
+        create_agent_session("nonexistent", {})
 
 
 def test_qwen_defaults():
@@ -90,3 +101,89 @@ def test_text_writer_aclose_closes_underlying_http_client():
     writer._llm._client.close = close
     asyncio.run(writer.aclose())
     close.assert_awaited_once()
+
+
+def test_text_writer_supports_openrouter_models():
+    writer = TextWriter("google/gemini-2.5-flash", {"OPENROUTER_API_KEY": "or-k"})
+    assert isinstance(writer._llm, openai.LLM)
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        TextWriter("google/gemini-2.5-flash", {})
+
+
+def test_openai_realtime_builds_model_and_custom_base_url():
+    s = OpenAIRealtimeSettings.from_env(
+        {
+            "OPENAI_API_KEY": "sk-test",
+            "OPENAI_REALTIME_BASE_URL": "https://relay.example.com/v1",
+            "OPENAI_VAD_SILENCE_MS": "900",
+        }
+    )
+    assert s.model == "gpt-realtime"
+    assert s.base_url == "https://relay.example.com/v1"
+    assert s.silence_ms == 900
+    model = get_realtime_model(
+        "openai",
+        {"OPENAI_API_KEY": "sk-test", "OPENAI_REALTIME_BASE_URL": "https://relay.example.com/v1"},
+    )
+    assert isinstance(model, openai.realtime.RealtimeModel)
+    assert model._opts.base_url == "https://relay.example.com/v1"
+    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+        get_realtime_model("openai", {})
+    with pytest.raises(ValueError, match="OPENAI_VAD_SILENCE_MS"):
+        OpenAIRealtimeSettings.from_env({"OPENAI_API_KEY": "k", "OPENAI_VAD_SILENCE_MS": "50"})
+
+
+def test_gemini_realtime_builds_model_with_transcriptions():
+    assert GeminiSettings.from_env({"GEMINI_API_KEY": "gk"}).api_key == "gk"
+    model = get_realtime_model("gemini", {"GOOGLE_API_KEY": "gk"})
+    assert isinstance(model, google.realtime.RealtimeModel)
+    assert model.capabilities.user_transcription is True
+    with pytest.raises(ValueError, match="GOOGLE_API_KEY"):
+        get_realtime_model("gemini", {})
+
+
+def test_xai_realtime_builds_model():
+    s = XAISettings.from_env({"XAI_API_KEY": "xk", "XAI_VAD_SILENCE_MS": "800"})
+    assert s.model == "grok-voice-latest"
+    assert s.silence_ms == 800
+    model = get_realtime_model("xai", {"XAI_API_KEY": "xk"})
+    assert isinstance(model, xai.realtime.RealtimeModel)
+    with pytest.raises(ValueError, match="XAI_API_KEY"):
+        get_realtime_model("xai", {})
+
+
+def test_openrouter_creates_stt_llm_tts_session():
+    s = OpenRouterSettings.from_env({"OPENROUTER_API_KEY": "or-k"})
+    assert s.base_url == "https://openrouter.ai/api/v1"
+    assert s.llm_model == "google/gemini-2.5-flash"
+
+    async def build() -> AgentSession:
+        return create_agent_session("openrouter", {"OPENROUTER_API_KEY": "or-k"})
+
+    session = asyncio.run(build())
+    assert isinstance(session, AgentSession)
+    assert isinstance(session.vad, silero.VAD)
+    assert isinstance(session.stt, openai.STT)
+    assert isinstance(session.llm, openai.LLM)
+    assert isinstance(session.tts, openai.TTS)
+    assert not session.stt.capabilities.streaming
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        create_agent_session("openrouter", {})
+
+
+def test_provider_catalog_reflects_configured_keys_and_allowlist():
+    env = {"DASHSCOPE_API_KEY": "d", "OPENROUTER_API_KEY": "o"}
+    assert is_provider_configured("qwen", env)
+    assert is_provider_configured("openrouter", env)
+    assert not is_provider_configured("openai", env)
+
+    catalog = {p.id: p for p in provider_catalog(env)}
+    assert catalog["qwen"].configured is True
+    assert catalog["qwen"].missing_env == ""
+    assert catalog["openrouter"].configured is True
+    assert catalog["openrouter"].kind == "pipeline"
+    assert catalog["openai"].configured is False
+    assert catalog["openai"].missing_env == "OPENAI_API_KEY"
+
+    filtered = provider_catalog(env | {"COACHW_PROVIDERS": "openrouter, qwen, bogus"})
+    assert [p.id for p in filtered] == ["openrouter", "qwen"]

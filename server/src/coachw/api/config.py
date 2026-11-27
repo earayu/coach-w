@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from coachw.api.invites import InviteBook
+from coachw.providers import DEFAULT_PROVIDER, ProviderStatus, default_provider, provider_catalog
 from coachw.session import DEFAULT_WRITER_MODELS, writer_models
 
 
@@ -23,6 +24,8 @@ class ApiSettings:
     token_ttl_s: int
     quota_tz: ZoneInfo
     writer_models: tuple[str, ...] = DEFAULT_WRITER_MODELS
+    default_provider: str = DEFAULT_PROVIDER
+    providers: tuple[ProviderStatus, ...] = ()
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> ApiSettings:
@@ -45,4 +48,6 @@ class ApiSettings:
             token_ttl_s=int(env.get("COACHW_TOKEN_TTL_S", "600")),
             quota_tz=ZoneInfo(env.get("COACHW_QUOTA_TZ", "Asia/Shanghai")),
             writer_models=writer_models(env),
+            default_provider=default_provider(env),
+            providers=provider_catalog(env),
         )

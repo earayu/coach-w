@@ -56,6 +56,8 @@ class SessionMeta:
     max_session_s: int
     cue_writer: str = ""
     """Text model that writes the coach's cues (developer setting, spec 4.2.1); "" = none."""
+    voice_provider: str = ""
+    """Voice provider chosen by the phone (qwen/openrouter/openai/gemini/xai); "" = default."""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), separators=(",", ":"))
@@ -67,4 +69,5 @@ class SessionMeta:
             athlete_id=parse_athlete_id(data["athlete_id"]),
             max_session_s=int(data["max_session_s"]),
             cue_writer=str(data.get("cue_writer") or ""),
+            voice_provider=str(data.get("voice_provider") or ""),
         )

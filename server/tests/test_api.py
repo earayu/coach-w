@@ -284,3 +284,57 @@ def test_rejoin_window_prevents_parallel_overspend(client: TestClient, clock: Cl
     assert rejoined["room"] == first["room"]
     # While the first athlete is rejoining that room, another athlete on Bob's code cannot overspend
     assert start(client, code=BOB, athlete=other_athlete()).status_code == 429
+
+
+def test_providers_endpoint_requires_invite_and_reports_configured(clock: Clock, coaches: Coaches):
+    env = ENV | {"DASHSCOPE_API_KEY": "d-key", "OPENROUTER_API_KEY": "or-key"}
+    c = TestClient(create_app(ApiSettings.from_env(env), clock=clock, has_coach=coaches))
+    assert c.post("/v1/providers", json={"invite_code": "wrong"}).status_code == 401
+
+    r = c.post("/v1/providers", json={"invite_code": ALICE})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["default_provider"] == "qwen"
+    by_id = {p["id"]: p for p in body["providers"]}
+    assert by_id["qwen"]["configured"] is True
+    assert by_id["openrouter"]["configured"] is True
+    assert by_id["openai"]["configured"] is False
+    assert by_id["openai"]["missing_env"] == "OPENAI_API_KEY"
+    # Never leak actual key values
+    assert "d-key" not in json.dumps(body) and "or-key" not in json.dumps(body)
+
+
+def test_phone_switches_voice_provider_and_gets_fresh_room(clock: Clock, coaches: Coaches):
+    env = ENV | {"DASHSCOPE_API_KEY": "d-key", "OPENROUTER_API_KEY": "or-key"}
+    c = TestClient(create_app(ApiSettings.from_env(env), clock=clock, has_coach=coaches))
+
+    # Unknown provider -> 422; unconfigured provider -> 400 naming the missing env var
+    bad = c.post(
+        "/v1/session",
+        json={"invite_code": ALICE, "athlete_id": ATHLETE, "voice_provider": "bogus"},
+    )
+    assert bad.status_code == 422
+    missing = c.post(
+        "/v1/session",
+        json={"invite_code": ALICE, "athlete_id": ATHLETE, "voice_provider": "openai"},
+    )
+    assert missing.status_code == 400
+    assert "OPENAI_API_KEY" in missing.json()["detail"]
+
+    # Start on default (qwen), then switch to openrouter -> must not reuse the qwen room
+    first = c.post("/v1/session", json={"invite_code": ALICE, "athlete_id": ATHLETE}).json()
+    assert SessionMeta.from_json(verify(first["token"]).metadata).voice_provider == ""
+
+    switched = c.post(
+        "/v1/session",
+        json={"invite_code": ALICE, "athlete_id": ATHLETE, "voice_provider": "openrouter"},
+    ).json()
+    assert switched["room"] != first["room"]
+    assert SessionMeta.from_json(verify(switched["token"]).metadata).voice_provider == "openrouter"
+
+    # Reconnecting with the same provider reuses the openrouter room
+    again = c.post(
+        "/v1/session",
+        json={"invite_code": ALICE, "athlete_id": ATHLETE, "voice_provider": "openrouter"},
+    ).json()
+    assert again["room"] == switched["room"]

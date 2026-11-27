@@ -322,11 +322,16 @@ final class VoiceSession: NSObject {
         let inviteCode = settings.trimmedInviteCode
         let athleteID = settings.athleteID
         let cueWriter = settings.cueWriter
+        let voiceProvider = settings.voiceProvider
         connectTask?.cancel()
         connectTask = Task { [weak self] in
             do {
                 let grant = try await TokenClient.requestSession(
-                    baseURL: baseURL, inviteCode: inviteCode, athleteID: athleteID, cueWriter: cueWriter
+                    baseURL: baseURL,
+                    inviteCode: inviteCode,
+                    athleteID: athleteID,
+                    cueWriter: cueWriter,
+                    voiceProvider: voiceProvider
                 )
                 guard let self, !Task.isCancelled else { return }
                 if self.machine.generation == gen {
@@ -482,7 +487,8 @@ final class VoiceSession: NSObject {
 
     private static func drop(for error: Error) -> ReconnectPolicy.Drop {
         switch error {
-        case TokenError.invalidBaseURL, TokenError.unknownInvite, TokenError.quotaExhausted: .final
+        case TokenError.invalidBaseURL, TokenError.unknownInvite, TokenError.quotaExhausted,
+             TokenError.providerUnavailable: .final
         case TokenError.server(let code): ReconnectPolicy.drop(forHTTPStatus: code)
         default: .network
         }

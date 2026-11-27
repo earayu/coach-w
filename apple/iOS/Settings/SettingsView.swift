@@ -9,6 +9,7 @@ struct SettingsView: View {
 
     @State private var showInviteCode = false
     @State private var copiedAthleteID = false
+    @State private var providerCatalog: ProviderCatalog?
 
     var body: some View {
         NavigationStack {
@@ -83,6 +84,40 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker("实时语音模型", selection: $settings.voiceProvider) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("服务器默认")
+                            Text(defaultProviderDetail)
+                                .font(.caption)
+                                .foregroundStyle(Theme.secondaryText)
+                        }
+                        .tag("")
+                        ForEach(displayedProviders) { provider in
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(provider.title)
+                                    if let badge = provider.statusBadge {
+                                        Text(badge)
+                                            .font(.caption2)
+                                            .foregroundStyle(provider.configured == true ? Theme.green : Theme.secondaryText)
+                                    }
+                                }
+                                Text(provider.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.secondaryText)
+                            }
+                            .tag(provider.id)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                } header: {
+                    Text("实时语音模型")
+                } footer: {
+                    Text("切换后，断开语音并重新连接即生效。模型 Key 仅保存在服务端，不在手机端存放。OpenRouter 暂不提供 /v1/realtime，选它时服务端用 OpenRouter Key 跑 STT + LLM + TTS。")
+                }
+
+                Section {
                     Picker("主动播报", selection: $settings.cueWriter) {
                         ForEach(AppSettings.cueWriters, id: \.id) { option in
                             VStack(alignment: .leading, spacing: 2) {
@@ -126,6 +161,47 @@ struct SettingsView: View {
         }
         .tint(Theme.accent)
         .preferredColorScheme(.dark)
+        .task(id: "\(settings.apiBaseURL.trimmedForSettings)|\(settings.trimmedInviteCode)") {
+            guard settings.isConfigured else {
+                providerCatalog = nil
+                return
+            }
+            providerCatalog = try? await TokenClient.fetchProviders(
+                baseURL: settings.apiBaseURL, inviteCode: settings.trimmedInviteCode
+            )
+        }
+    }
+
+    private struct DisplayedProvider: Identifiable {
+        let id: String
+        let title: String
+        let detail: String
+        let configured: Bool?
+        let statusBadge: String?
+    }
+
+    private var defaultProviderDetail: String {
+        if let def = providerCatalog?.defaultProvider, !def.isEmpty {
+            return "当前服务端默认：\(def)"
+        }
+        return "跟随服务端 COACHW_PROVIDER（默认 Qwen Realtime）"
+    }
+
+    private var displayedProviders: [DisplayedProvider] {
+        if let catalog = providerCatalog, !catalog.providers.isEmpty {
+            return catalog.providers.map { p in
+                DisplayedProvider(
+                    id: p.id,
+                    title: p.title,
+                    detail: p.detail,
+                    configured: p.configured,
+                    statusBadge: p.configured ? "可用" : (p.missingEnv.isEmpty ? "未配置" : "缺 \(p.missingEnv)")
+                )
+            }
+        }
+        return AppSettings.voiceProviders.map { p in
+            DisplayedProvider(id: p.id, title: p.title, detail: p.detail, configured: nil, statusBadge: nil)
+        }
     }
 
     private var serverFooterIsError: Bool {

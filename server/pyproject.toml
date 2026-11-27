@@ -9,6 +9,10 @@ dependencies = [
     "livekit-agents==1.8.10",
     "livekit-api==1.2.2",
     "livekit-plugins-aliyun==1.8.10",
+    "livekit-plugins-google==1.8.10",
+    "livekit-plugins-openai==1.8.10",
+    "livekit-plugins-silero==1.8.10",
+    "livekit-plugins-xai==1.8.10",
     "uvicorn==0.54.0",
 ]
 

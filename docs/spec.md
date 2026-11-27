@@ -454,14 +454,20 @@ Python Agent Worker（LiveKit Agents）⇄ Qwen Realtime（DashScope WebSocket�
 - 教练 Agent：`server/src/coachw/agent/`。`worker.py` 是 `AgentServer` 入口（`python -m coachw.agent dev|start`），每个房间一个会话；`coach.py` 是系统提示词和工具；`loop.py` 是 M3 的每秒教练循环（4.8）。指标状态在 `coachw.coach.MetricsState`（M2 的 `metrics.py` 只存最新一帧，M3 并入）。
 - Agent 只接受房间里那位运动者（token 的 identity）在 `coach.metrics` 上发的帧，用 `MetricsFrame` 解析；坏帧丢弃并只记错误类型。按 `(ts, seq)` 只保留更新的帧，迟到的帧不覆盖。
 - `get_metrics` 返回最新一帧里有的指标、`age_s` 和换算好的 `pace_per_km`；超过 10 秒没有新帧时返回 `available: false`。坐标不给模型。缺省的指标不出现，不报 0。
-- 实时模型由 `coachw.providers.get_realtime_model(name)` 创建，`COACHW_PROVIDER` 默认 `qwen`；插件只在 `providers/` 里引用。
+- 语音模型与多厂商切换（COCH-22）：会话由 `coachw.providers.create_agent_session(name)` 创建（实时模型也保留 `get_realtime_model(name)`），默认取 `COACHW_PROVIDER`（默认 `qwen`），插件和厂商 SDK 只在 `server/src/coachw/providers/` 里引用。当前支持五种后端：
+  - `qwen`：Qwen Realtime（`livekit-plugins-aliyun` 1.8.10，`DASHSCOPE_API_KEY`）。
+  - `openrouter`：OpenRouter 语音通道（`livekit-plugins-openai` 1.8.10 + `livekit-plugins-silero` 1.8.10，仅需一个 `OPENROUTER_API_KEY`）。OpenRouter 官方文档明确不提供 `/v1/realtime` WebSocket，因此用 OpenRouter 兼容 OpenAI 的 `/api/v1/audio/transcriptions`（STT，默认 `openai/gpt-4o-mini-transcribe`）、`/api/v1/chat/completions`（LLM，默认 `google/gemini-2.5-flash`）、`/api/v1/audio/speech`（TTS，默认 `google/gemini-2.5-flash-tts` / `Kore`，`mp3` 格式由 LiveKit 自动解码重采样）配本机 Silero VAD 组成实时语音会话；`TextWriter` 也支持含 `/` 的 OpenRouter 文本模型。
+  - `openai`：OpenAI Realtime（`livekit-plugins-openai` 1.8.10，`OPENAI_API_KEY`，支持 `OPENAI_REALTIME_BASE_URL` 接兼容中转）。
+  - `gemini`：Google Gemini Live（`livekit-plugins-google` 1.8.10，`GOOGLE_API_KEY` / `GEMINI_API_KEY`，开启输入与输出转写）。
+  - `xai`：xAI Grok Voice（`livekit-plugins-xai` 1.8.10，`XAI_API_KEY`）。
+  - 手机端可按会话切换：`POST /v1/providers`（需邀请码）返回服务端允许（`COACHW_PROVIDERS`）的后端列表、默认后端及各后端 Key 配置状态（不返回密钥值）；`POST /v1/session` 接收 `voice_provider`（空字符串表示跟随服务端默认），服务端校验 Key 已配置后签进 `SessionMeta.voice_provider`（未配置返回 400 并说明缺少的环境变量），且切换后端时不复用旧后端的活跃房间。除 `qwen` 外的四个新后端尚未在真机/生产 Key 下做端到端语音实测（待验证）。
 - 同一主机预热的空闲进程数 `COACHW_AGENT_IDLE_PROCESSES`（默认 2；LiveKit 生产默认 8，2 核 4G 吃不消）；进程初始化超时放宽到 30 秒（负载高时默认 10 秒不够，实测会导致派单失败）。
 - 本机一条命令起全套：`./scripts/dev.sh`（LiveKit 二进制 + token API + Agent，日志在 `logs/`）。`./scripts/dev.sh --lan` 让同一 Wi‑Fi 下的手机连这台 Mac：LiveKit 监听所有网卡并以 en0 地址对外宣告（`--node-ip`），token API 监听 `0.0.0.0`，发给手机的 `server_url` 是 `ws://<局域网IP>:7880`。端到端冒烟：`server/tests/e2e/smoke_voice.py`，用 macOS `say` 提问，用合成指标帧，检查回答里的数字来自工具；`server/tests/e2e/smoke_coach.py`（M3）从运动开始发合成帧，检查开始节点和心率过高时教练主动开口、`coach.cue` 下发、教练说话时紧急 cue 打断、`get_progress` / `set_quiet` 被调用、状态摘要不引起回复。
 
 ### 7.2.1 iOS 实现（M2）
 
-- 语音模块 `apple/iOS/Voice/`：`VoiceSession.swift` 是唯一引用 LiveKit Swift SDK（2.19.0，锁定版本）的文件；`TokenClient.swift` 调 `POST /v1/session`。
-- 身份与配置 `apple/iOS/Settings/AppSettings.swift`：`athlete_id` 首次启动生成，存钥匙串（锁屏后仍可读，`AfterFirstUnlock`）；邀请码存钥匙串；token API 地址存 UserDefaults，在 App 的"设置"里填。
+- 语音模块 `apple/iOS/Voice/`：`VoiceSession.swift` 是唯一引用 LiveKit Swift SDK（2.19.0，锁定版本）的文件；`TokenClient.swift` 调 `POST /v1/session`（带 `cue_writer`、`voice_provider`）和 `POST /v1/providers`（在设置页展示各后端在服务端的可用状态）。
+- 身份与配置 `apple/iOS/Settings/AppSettings.swift`：`athlete_id` 首次启动生成，存钥匙串（锁屏后仍可读，`AfterFirstUnlock`）；邀请码存钥匙串；token API 地址、`voice_provider`、`cue_writer` 存 UserDefaults，在 App 的"设置"里选择（模型 Key 不下发也不保存在手机端）。
 - 音频会话交给 LiveKit 的自动配置：开麦后是 `.playAndRecord`，选项含 `allowBluetoothHFP` 和 `allowBluetoothA2DP`（SDK 2.19.0 源码 `AudioSessionConfiguration.swift`）。Info.plist 开 `audio` 后台模式、麦克风说明、本地网络说明，ATS 只放开 `NSAllowsLocalNetworking`（开发时连局域网 http/ws）。
 - 指标转发：`MirrorReceiver.onFrames` 把镜像收到的每批帧（已带 `phone_ts`）交给 `VoiceSession.send`，以可靠模式发到 data channel 的 `coach.metrics`。按到达顺序串行发送（上一批发完再发下一批），后台恢复时补发的一批帧不会乱序。语音没连上时不发、不缓存：教练只需要最新状态。
 - 提示转发（M3）：`VoiceSession` 收 `coach.cue`，解出 `CoachKit.CoachCue`（LiveKit 类型不出语音模块），过期的丢弃，其余交给 `MirrorReceiver.sendToWatch` 经镜像会话转给手表（6.3）。手表 `WorkoutController.present` 震动（`WKInterfaceDevice.play`）并在运动表盘顶部显示文案。

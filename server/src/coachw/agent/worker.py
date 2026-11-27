@@ -46,7 +46,7 @@ from coachw.protocol import (
     ProtocolError,
     WorkoutState,
 )
-from coachw.providers import get_realtime_model
+from coachw.providers import create_agent_session, default_provider
 from coachw.providers.writer import TextWriter
 from coachw.session import (
     AGENT_NAME,
@@ -243,8 +243,12 @@ def cue_writer_for(meta: SessionMeta, brain: CoachBrain, agent: CoachAgent) -> C
     if meta.cue_writer not in writer_models(os.environ):
         logger.warning("cue writer not offered by this server; the realtime model speaks alone")
         return None
+    try:
+        text = TextWriter(meta.cue_writer, os.environ)
+    except ValueError as e:
+        logger.warning("cue writer %s unavailable (%s); speaking alone", meta.cue_writer, e)
+        return None
     logger.info("cues written by %s", meta.cue_writer)
-    text = TextWriter(meta.cue_writer, os.environ)
     return CueWriter(
         brain, text.write, lambda: conversation_of(agent.chat_ctx.items), close=text.aclose
     )
@@ -323,7 +327,9 @@ async def entrypoint(ctx: JobContext) -> None:
     brain = CoachBrain(Athlete(athlete_id=meta.athlete_id), tz=athlete_tz())
     inbox.attach(brain, participant.identity)
 
-    session = AgentSession(llm=get_realtime_model(os.environ.get("COACHW_PROVIDER", "qwen")))
+    provider = meta.voice_provider or default_provider(os.environ)
+    logger.info("using voice provider=%s", provider)
+    session = create_agent_session(provider, os.environ)
     directory = transcript_dir()
     history = (
         recent_conversation(

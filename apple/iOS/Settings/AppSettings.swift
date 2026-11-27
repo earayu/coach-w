@@ -55,6 +55,11 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(apiBaseURL.trimmedForSettings, forKey: "api_base_url") }
     }
 
+    /// Voice provider chosen by the athlete (`""` = server default `COACHW_PROVIDER`).
+    var voiceProvider: String {
+        didSet { UserDefaults.standard.set(voiceProvider, forKey: "voice_provider") }
+    }
+
     /// Developer setting (testing phase, spec 4.2.1): the text model that writes the coach's
     /// cues before the realtime model speaks them; "" lets the realtime model speak alone.
     var cueWriter: String {
@@ -69,6 +74,16 @@ final class AppSettings {
 
     /// Whether starting a workout should bring the coach along right now.
     var wantsCoachForWorkout: Bool { coachJoinsWorkouts && isConfigured }
+
+    /// Fallback voice provider list when offline or talking to an older server
+    /// (`server/src/coachw/providers/__init__.py` PROVIDER_SPECS).
+    static let voiceProviders: [(id: String, title: String, detail: String)] = [
+        ("qwen", "Qwen Realtime", "通义千问原生实时语音（DashScope）"),
+        ("openrouter", "OpenRouter 语音", "用 OpenRouter Key 跑 STT + LLM + TTS（OpenRouter 无 /v1/realtime）"),
+        ("openai", "OpenAI Realtime", "OpenAI 原生实时语音（支持自定义 Base URL）"),
+        ("gemini", "Gemini Live", "Google 原生实时语音"),
+        ("xai", "xAI Grok Voice", "Grok 原生实时语音"),
+    ]
 
     /// What the server offers (`server/src/coachw/session.py` DEFAULT_WRITER_MODELS).
     static let cueWriters: [(id: String, title: String, detail: String)] = [
@@ -102,6 +117,7 @@ final class AppSettings {
         }
         inviteCode = (Keychain.get("invite_code") ?? "").trimmedForSettings
         apiBaseURL = (UserDefaults.standard.string(forKey: "api_base_url") ?? "").trimmedForSettings
+        voiceProvider = UserDefaults.standard.string(forKey: "voice_provider") ?? ""
         cueWriter = UserDefaults.standard.string(forKey: "cue_writer") ?? Self.defaultCueWriter
         coachJoinsWorkouts = UserDefaults.standard.object(forKey: "coach_joins_workouts") as? Bool ?? true
         #if DEBUG
@@ -115,6 +131,10 @@ final class AppSettings {
         if let code = env["COACHW_INVITE_CODE"]?.trimmedForSettings {
             inviteCode = code
             Keychain.set("invite_code", code)
+        }
+        if let provider = env["COACHW_VOICE_PROVIDER"]?.trimmedForSettings {
+            voiceProvider = provider
+            UserDefaults.standard.set(provider, forKey: "voice_provider")
         }
         #endif
     }
